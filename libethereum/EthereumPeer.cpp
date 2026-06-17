@@ -1,6 +1,19 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #include "EthereumPeer.h"
 #include <libethcore/Common.h>
@@ -11,10 +24,10 @@ using namespace std;
 using namespace dev;
 using namespace dev::eth;
 
+static std::string const c_ethCapability = "eth";
+
 namespace
 {
-std::string const c_ethCapability = "eth";
-
 string toString(Asking _a)
 {
     switch (_a)
@@ -54,20 +67,17 @@ void EthereumPeer::setStatus(unsigned _protocolVersion, u256 const& _networkId,
 std::string EthereumPeer::validate(
     h256 const& _hostGenesisHash, unsigned _hostProtocolVersion, u256 const& _hostNetworkId) const
 {
-    std::stringstream error;
-    if (m_networkId != _hostNetworkId)
-        error << "Network identifier mismatch. Host network id: " << _hostNetworkId
-              << ", peer network id: " << m_networkId;
+    std::string error;
+    if (m_genesisHash != _hostGenesisHash)
+        error = "Invalid genesis hash.";
     else if (m_protocolVersion != _hostProtocolVersion)
-        error << "Protocol version mismatch. Host protocol version: " << _hostProtocolVersion
-              << ", peer protocol version: " << m_protocolVersion;
-    else if (m_genesisHash != _hostGenesisHash)
-        error << "Genesis hash mismatch. Host genesis hash: " << _hostGenesisHash.abridged()
-              << ", peer genesis hash: " << m_genesisHash.abridged();
+        error = "Invalid protocol version.";
+    else if (m_networkId != _hostNetworkId)
+        error = "Invalid network identifier.";
     else if (m_asking != Asking::State && m_asking != Asking::Nothing)
-        error << "Peer banned for unexpected status message.";
+        error = "Peer banned for unexpected status message.";
 
-    return error.str();
+    return error;
 }
 
 void EthereumPeer::requestStatus(
@@ -95,7 +105,7 @@ void EthereumPeer::requestBlockHeaders(
     m_host->prep(m_id, c_ethCapability, s, GetBlockHeadersPacket, 4)
         << _startNumber << _count << _skip << (_reverse ? 1 : 0);
     LOG(m_logger) << "Requesting " << _count << " block headers starting from " << _startNumber
-                  << (_reverse ? " in reverse" : "") << " from " << m_id;
+                  << (_reverse ? " in reverse" : "");
     m_lastAskedHeaders = _count;
     m_host->sealAndSend(m_id, s);
 }
@@ -112,7 +122,7 @@ void EthereumPeer::requestBlockHeaders(
     m_host->prep(m_id, c_ethCapability, s, GetBlockHeadersPacket, 4)
         << _startHash << _count << _skip << (_reverse ? 1 : 0);
     LOG(m_logger) << "Requesting " << _count << " block headers starting from " << _startHash
-                  << (_reverse ? " in reverse" : "") << " from " << m_id;
+                  << (_reverse ? " in reverse" : "");
     m_lastAskedHeaders = _count;
     m_host->sealAndSend(m_id, s);
 }
@@ -134,7 +144,7 @@ void EthereumPeer::requestReceipts(h256s const& _blocks)
 }
 
 void EthereumPeer::requestByHashes(
-    h256s const& _hashes, Asking _asking, EthSubprotocolPacketType _packetType)
+    h256s const& _hashes, Asking _asking, SubprotocolPacketType _packetType)
 {
     if (m_asking != Asking::Nothing)
     {
@@ -148,8 +158,6 @@ void EthereumPeer::requestByHashes(
         m_host->prep(m_id, c_ethCapability, s, _packetType, _hashes.size());
         for (auto const& i : _hashes)
             s << i;
-        LOG(m_logger) << "Requesting " << _hashes.size() << " " << ::toString(_asking) << " from "
-                      << m_id;
         m_host->sealAndSend(m_id, s);
     }
     else

@@ -1,7 +1,25 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2015-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+	This file is part of cpp-ethereum.
 
+	cpp-ethereum is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+
+	cpp-ethereum is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License
+	along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+/** @file Eth.cpp
+ * @authors:
+ *   Gav Wood <i@gavwood.com>
+ *   Marek Kotewicz <marek@ethdev.com>
+ * @date 2014
+ */
 
 #include "Eth.h"
 #include "AccountHolder.h"
@@ -142,14 +160,14 @@ Json::Value Eth::eth_pendingTransactions()
 
 string Eth::eth_getTransactionCount(string const& _address, string const& _blockNumber)
 {
-    try
-    {
-        return toString(client()->countAt(jsToAddress(_address), jsToBlockNumber(_blockNumber)));
-    }
-    catch (...)
-    {
-        BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
-    }
+	try
+	{
+		return toJS(client()->countAt(jsToAddress(_address), jsToBlockNumber(_blockNumber)));
+	}
+	catch (...)
+	{
+		BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
+	}
 }
 
 Json::Value Eth::eth_getBlockTransactionCountByHash(string const& _blockHash)
@@ -345,25 +363,17 @@ Json::Value Eth::eth_getBlockByHash(string const& _blockHash, bool _includeTrans
 {
 	try
 	{
-		h256 const h = jsToFixed<32>(_blockHash);
+		h256 h = jsToFixed<32>(_blockHash);
 		if (!client()->isKnown(h))
 			return Json::Value(Json::nullValue);
 
-        Json::Value ret;
-        auto const blockDetails = client()->blockDetails(h);
-        auto const blockHeader = client()->blockInfo(h);
-        auto const uncleHashes = client()->uncleHashes(h);
-        auto* sealEngine = client()->sealEngine();
-        if (_includeTransactions)
-            ret = toJson(
-                blockHeader, blockDetails, uncleHashes, client()->transactions(h), sealEngine);
-        else
-            ret = toJson(
-                blockHeader, blockDetails, uncleHashes, client()->transactionHashes(h), sealEngine);
-        return ret;
-    }
-    catch (...)
-    {
+		if (_includeTransactions)
+			return toJson(client()->blockInfo(h), client()->blockDetails(h), client()->uncleHashes(h), client()->transactions(h), client()->sealEngine());
+		else
+			return toJson(client()->blockInfo(h), client()->blockDetails(h), client()->uncleHashes(h), client()->transactionHashes(h), client()->sealEngine());
+	}
+	catch (...)
+	{
 		BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
 	}
 }
@@ -372,23 +382,15 @@ Json::Value Eth::eth_getBlockByNumber(string const& _blockNumber, bool _includeT
 {
 	try
 	{
-		BlockNumber const h = jsToBlockNumber(_blockNumber);
+		BlockNumber h = jsToBlockNumber(_blockNumber);
 		if (!client()->isKnown(h))
 			return Json::Value(Json::nullValue);
 
-        Json::Value ret;
-        auto const blockDetails = client()->blockDetails(h);
-        auto const blockHeader = client()->blockInfo(h);
-        auto const uncleHashes = client()->uncleHashes(h);
-        auto* sealEngine = client()->sealEngine();
-        if (_includeTransactions)
-            ret = toJson(
-                blockHeader, blockDetails, uncleHashes, client()->transactions(h), sealEngine);
-        else
-            ret = toJson(
-                blockHeader, blockDetails, uncleHashes, client()->transactionHashes(h), sealEngine);
-        return ret;
-    }
+		if (_includeTransactions)
+			return toJson(client()->blockInfo(h), client()->blockDetails(h), client()->uncleHashes(h), client()->transactions(h), client()->sealEngine());
+		else
+			return toJson(client()->blockInfo(h), client()->blockDetails(h), client()->uncleHashes(h), client()->transactionHashes(h), client()->sealEngine());
+	}
 	catch (...)
 	{
 		BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
@@ -737,12 +739,10 @@ string dev::rpc::exceptionToErrorMessage()
 	{
 		ret = "Transaction gas amount is less than the intrinsic gas amount for this transaction type.";
 	}
-    catch (BlockGasLimitReached const& _ex)
-    {
-        string errorString = "Block gas limit reached! ";
-        cwarn << errorString + _ex.what();
-        ret = errorString;
-    }
+	catch (BlockGasLimitReached const&)
+	{
+		ret = "Block gas limit reached.";
+	}
 	catch (InvalidNonce const&)
 	{
 		ret = "Invalid transaction nonce.";

@@ -33,6 +33,7 @@ set(sources
     Web3.cpp
     Web3.h
     Web3Face.h
+    WhisperFace.h
 )
 
 if(WIN32)

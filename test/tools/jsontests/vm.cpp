@@ -1,9 +1,25 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
 
-/// @file
-/// vm test functions.
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+/** @file vm.cpp
+ * @author Gav Wood <i@gavwood.com>
+ * @date 2014
+ * vm test functions.
+ */
+
 #include "vm.h"
 #include <test/tools/libtestutils/TestLastBlockHashes.h>
 #include <libethereum/ChainParams.h>
@@ -20,10 +36,8 @@ using namespace dev::eth;
 using namespace dev::test;
 namespace fs = boost::filesystem;
 
-FakeExtVM::FakeExtVM(EnvInfo const& _envInfo, unsigned _depth)
-  :  /// TODO: XXX: remove the default argument & fix.
-    ExtVMFace(_envInfo, Address(), Address(), Address(), 0, 1, bytesConstRef(), bytes(), EmptySHA3,
-        0, _depth, false, false)
+FakeExtVM::FakeExtVM(EnvInfo const& _envInfo, unsigned _depth):			/// TODO: XXX: remove the default argument & fix.
+    ExtVMFace(_envInfo, Address(), Address(), Address(), 0, 1, bytesConstRef(), bytes(), EmptySHA3, false, false, _depth)
 {}
 
 CreateResult FakeExtVM::create(
@@ -94,7 +108,7 @@ EnvInfo FakeExtVM::importEnv(mObject const& _o, LastBlockHashesFace const& _last
     blockHeader.setTimestamp(toInt64(_o.at("currentTimestamp")));
     blockHeader.setAuthor(Address(_o.at("currentCoinbase").get_str()));
     blockHeader.setNumber(toUint64(_o.at("currentNumber")));
-    return {blockHeader, _lastBlockHashes, 0, 0};
+    return EnvInfo(blockHeader, _lastBlockHashes, 0);
 }
 
 mObject FakeExtVM::exportState()
@@ -249,7 +263,7 @@ eth::OnOpFunc FakeExtVM::simpleTrace() const
         /*add the stack*/
         Array a_stack;
         for (auto i : vm.stack())
-            a_stack.push_back(i.str());
+            a_stack.push_back((string)i);
 
         o_step.push_back(Pair("stack", a_stack));
 
@@ -263,12 +277,12 @@ eth::OnOpFunc FakeExtVM::simpleTrace() const
         /*add the storage*/
         Object storage;
         for (auto const& i : std::get<2>(ext.addresses.find(ext.myAddress)->second))
-            storage.push_back(Pair(i.first.str(), i.second.str()));
+            storage.push_back(Pair((string)i.first, (string)i.second));
 
         /*add all the other details*/
         o_step.push_back(Pair("storage", storage));
         o_step.push_back(Pair("depth", to_string(ext.depth)));
-        o_step.push_back(Pair("gas", gas.str()));
+        o_step.push_back(Pair("gas", (string)gas));
         o_step.push_back(Pair("address", toString(ext.myAddress)));
         o_step.push_back(Pair("step", steps));
         o_step.push_back(Pair("pc", pc));
@@ -427,7 +441,7 @@ json_spirit::mValue VmTestSuite::doTests(json_spirit::mValue const& _input, bool
                 BOOST_REQUIRE_MESSAGE(testInput.count("logs") > 0, testname + " logs field is missing.");
                 BOOST_REQUIRE_MESSAGE(testInput.at("logs").type() == str_type, testname + " logs field is not a string.");
 
-                dev::test::FakeExtVM test(eth::EnvInfo{BlockHeader{}, lastBlockHashes, 0, 0});
+                dev::test::FakeExtVM test(eth::EnvInfo{BlockHeader{}, lastBlockHashes, 0});
                 test.importState(testInput.at("post").get_obj());
                 test.importCallCreates(testInput.at("callcreates").get_array());
 
@@ -474,16 +488,13 @@ public:
     VmTestFixture()
     {
         test::VmTestSuite suite;
-        string const casename = boost::unit_test::framework::current_test_case().p_name;
-        boost::filesystem::path suiteFillerPath = suite.getFullPathFiller(casename).parent_path();
+        string const& casename = boost::unit_test::framework::current_test_case().p_name;
         if (casename == "vmPerformance" && !Options::get().all)
         {
             std::cout << "Skipping " << casename << " because --all option is not specified.\n";
-            test::TestOutputHelper::get().markTestFolderAsFinished(suiteFillerPath, casename);
             return;
         }
         suite.runAllTestsInFolder(casename);
-        test::TestOutputHelper::get().markTestFolderAsFinished(suiteFillerPath, casename);
     }
 };
 

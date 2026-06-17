@@ -1,6 +1,19 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2018-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include <libaleth-interpreter/interpreter.h>
 #include <libethereum/LastBlockHashesFace.h>
@@ -9,7 +22,6 @@
 #include <test/tools/jsontests/vm.h>
 #include <test/tools/libtesteth/BlockChainHelper.h>
 #include <test/tools/libtesteth/TestOutputHelper.h>
-#include <boost/format.hpp>
 #include <boost/test/unit_test.hpp>
 
 using namespace dev;
@@ -45,7 +57,7 @@ public:
     void testCreate2worksInConstantinople()
     {
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         vm->exec(gas, extVm, OnOpFunc{});
 
@@ -57,7 +69,7 @@ public:
         se.reset(ChainParams(genesisInfo(Network::ByzantiumTest)).createSealEngine());
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         BOOST_REQUIRE_THROW(vm->exec(gas, extVm, OnOpFunc{}), BadInstruction);
     }
@@ -67,7 +79,7 @@ public:
         state.addBalance(expectedAddress, 1 * ether);
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         vm->exec(gas, extVm, OnOpFunc{});
 
@@ -76,10 +88,10 @@ public:
 
     void testCreate2doesntChangeContractIfAddressExists()
     {
-        state.setCode(expectedAddress, bytes{inputData}, 0);
+        state.setCode(expectedAddress, bytes{inputData});
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         vm->exec(gas, extVm, OnOpFunc{});
         BOOST_REQUIRE(state.code(expectedAddress) == inputData);
@@ -90,7 +102,7 @@ public:
         staticCall = true;
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         BOOST_REQUIRE_THROW(vm->exec(gas, extVm, OnOpFunc{}), DisallowedStateChange);
     }
@@ -105,7 +117,7 @@ public:
         state.commit(State::CommitBehaviour::KeepEmptyAccounts);
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         vm->exec(gas, extVm, OnOpFunc{});
         BOOST_REQUIRE(state.addressHasCode(expectedAddress));
@@ -125,7 +137,7 @@ public:
         state.commit(State::CommitBehaviour::KeepEmptyAccounts);
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         vm->exec(gas, extVm, OnOpFunc{});
         BOOST_REQUIRE_EQUAL(state.storage(expectedAddress, 1), 0);
@@ -135,7 +147,7 @@ public:
     void testCreate2costIncludesInitCodeHashing()
     {
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, ref(inputData),
-            ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(code), sha3(code), depth, isCreate, staticCall);
 
         uint64_t gasBefore = 0;
         uint64_t gasAfter = 0;
@@ -169,15 +181,14 @@ public:
 
     BlockHeader blockHeader{initBlockHeader()};
     LastBlockHashes lastBlockHashes;
+    EnvInfo envInfo{blockHeader, lastBlockHashes, 0};
     Address address{KeyPair::create().address()};
     State state{0};
     std::unique_ptr<SealEngineFace> se{
         ChainParams(genesisInfo(Network::ConstantinopleTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
 
     u256 value = 0;
     u256 gasPrice = 1;
-    u256 version = 0;
     int depth = 0;
     bool isCreate = false;
     bool staticCall = false;
@@ -208,9 +219,7 @@ public:
 class AlethInterpreterCreate2TestFixture: public Create2TestFixture
 {
 public:
-    AlethInterpreterCreate2TestFixture()
-      : Create2TestFixture{new EVMC{evmc_create_aleth_interpreter(), {}}}
-    {}
+    AlethInterpreterCreate2TestFixture(): Create2TestFixture{new EVMC{evmc_create_interpreter()}} {}
 };
 
 class ExtcodehashTestFixture : public TestOutputHelperFixture
@@ -219,13 +228,13 @@ public:
     explicit ExtcodehashTestFixture(VMFace* _vm) : vm{_vm}
     {
         state.addBalance(address, 1 * ether);
-        state.setCode(extAddress, bytes{extCode}, 0);
+        state.setCode(extAddress, bytes{extCode});
     }
 
     void testExtcodehashWorksInConstantinople()
     {
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            extAddress.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            extAddress.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -235,7 +244,7 @@ public:
     void testExtcodehashHasCorrectCost()
     {
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            extAddress.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            extAddress.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         bigint gasBefore;
         bigint gasAfter;
@@ -258,7 +267,7 @@ public:
         se.reset(ChainParams(genesisInfo(Network::ByzantiumTest)).createSealEngine());
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            extAddress.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            extAddress.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         BOOST_REQUIRE_THROW(vm->exec(gas, extVm, OnOpFunc{}), BadInstruction);
     }
@@ -269,8 +278,7 @@ public:
         state.addBalance(addressWithEmptyCode, 1 * ether);
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            addressWithEmptyCode.ref(), ref(code), sha3(code), version, depth, isCreate,
-            staticCall);
+            addressWithEmptyCode.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -283,7 +291,7 @@ public:
         Address addressNonExisting{0x1234};
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            addressNonExisting.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            addressNonExisting.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -295,7 +303,7 @@ public:
         Address addressPrecompile{0x1};
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            addressPrecompile.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            addressPrecompile.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -308,7 +316,7 @@ public:
         state.addBalance(addressPrecompile, 1 * ether);
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            addressPrecompile.ref(), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            addressPrecompile.ref(), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -329,7 +337,7 @@ public:
             bytes{1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc} + extAddress.ref();
 
         ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice,
-            ref(extAddressPrefixed), ref(code), sha3(code), version, depth, isCreate, staticCall);
+            ref(extAddressPrefixed), ref(code), sha3(code), depth, isCreate, staticCall);
 
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
@@ -338,16 +346,15 @@ public:
 
     BlockHeader blockHeader{initBlockHeader()};
     LastBlockHashes lastBlockHashes;
+    EnvInfo envInfo{blockHeader, lastBlockHashes, 0};
     Address address{KeyPair::create().address()};
     Address extAddress{KeyPair::create().address()};
     State state{0};
     std::unique_ptr<SealEngineFace> se{
         ChainParams(genesisInfo(Network::ConstantinopleTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
 
     u256 value = 0;
     u256 gasPrice = 1;
-    u256 version = 0;
     int depth = 0;
     bool isCreate = false;
     bool staticCall = false;
@@ -378,158 +385,88 @@ class AlethInterpreterExtcodehashTestFixture : public ExtcodehashTestFixture
 {
 public:
     AlethInterpreterExtcodehashTestFixture()
-      : ExtcodehashTestFixture{new EVMC{evmc_create_aleth_interpreter(), {}}}
+      : ExtcodehashTestFixture{new EVMC{evmc_create_interpreter()}}
     {}
 };
 
 class SstoreTestFixture : public TestOutputHelperFixture
 {
 public:
-    struct Case
-    {
-        char const* code;
-        u256 const originalValue;
-        u256 const expectedGasConsumed;
-        u256 const expectedRefund;
-    };
-
-    // clang-format off
-    std::array<Case, 17> const constantinopleCases = {{
-        { "0x60006000556000600055",           0, 412,   0     },
-        { "0x60006000556001600055",           0, 20212, 0     },
-        { "0x60016000556000600055",           0, 20212, 19800 },
-        { "0x60016000556002600055",           0, 20212, 0     },
-        { "0x60016000556001600055",           0, 20212, 0     },
-        { "0x60006000556000600055",           1, 5212,  15000 },
-        { "0x60006000556001600055",           1, 5212,  4800  },
-        { "0x60006000556002600055",           1, 5212,  0     },
-        { "0x60026000556000600055",           1, 5212,  15000 },
-        { "0x60026000556003600055",           1, 5212,  0     },
-        { "0x60026000556001600055",           1, 5212,  4800  },
-        { "0x60026000556002600055",           1, 5212,  0     },
-        { "0x60016000556000600055",           1, 5212,  15000 },
-        { "0x60016000556002600055",           1, 5212,  0     },
-        { "0x60016000556001600055",           1, 412,   0     },
-        { "0x600160005560006000556001600055", 0, 40218, 19800 },
-        { "0x600060005560016000556000600055", 1, 10218, 19800 },
-    }};
-
-    std::array<Case, 17> const petersburgCases = {{
-        { "0x60006000556000600055",           0, 10012, 0     },
-        { "0x60006000556001600055",           0, 25012, 0     },
-        { "0x60016000556000600055",           0, 25012, 15000 },
-        { "0x60016000556002600055",           0, 25012, 0     },
-        { "0x60016000556001600055",           0, 25012, 0     },
-        { "0x60006000556000600055",           1, 10012, 15000 },
-        { "0x60006000556001600055",           1, 25012, 15000 },
-        { "0x60006000556002600055",           1, 25012, 15000 },
-        { "0x60026000556000600055",           1, 10012, 15000 },
-        { "0x60026000556003600055",           1, 10012, 0     },
-        { "0x60026000556001600055",           1, 10012, 0     },
-        { "0x60026000556002600055",           1, 10012, 0     },
-        { "0x60016000556000600055",           1, 10012, 15000 },
-        { "0x60016000556002600055",           1, 10012, 0     },
-        { "0x60016000556001600055",           1, 10012, 0     },
-        { "0x600160005560006000556001600055", 0, 45018, 15000 },
-        { "0x600060005560016000556000600055", 1, 30018, 30000 },
-    }};
-
-    std::array<Case, 17> const istanbulCases = {{
-        { "0x60006000556000600055",           0, 1612,  0     },
-        { "0x60006000556001600055",           0, 20812, 0     },
-        { "0x60016000556000600055",           0, 20812, 19200 },
-        { "0x60016000556002600055",           0, 20812, 0     },
-        { "0x60016000556001600055",           0, 20812, 0     },
-        { "0x60006000556000600055",           1, 5812,  15000 },
-        { "0x60006000556001600055",           1, 5812,  4200  },
-        { "0x60006000556002600055",           1, 5812,  0     },
-        { "0x60026000556000600055",           1, 5812,  15000 },
-        { "0x60026000556003600055",           1, 5812,  0     },
-        { "0x60026000556001600055",           1, 5812,  4200  },
-        { "0x60026000556002600055",           1, 5812,  0     },
-        { "0x60016000556000600055",           1, 5812,  15000 },
-        { "0x60016000556002600055",           1, 5812,  0     },
-        { "0x60016000556001600055",           1, 1612,  0    },
-        { "0x600160005560006000556001600055", 0, 40818, 19200 },
-        { "0x600060005560016000556000600055", 1, 10818, 19200 },
-    }};
-    // clang-format on
-
     explicit SstoreTestFixture(VMFace* _vm) : vm{_vm}
     {
         state.addBalance(from, 1 * ether);
         state.addBalance(to, 1 * ether);
     }
 
-    void testGasConsumed(SealEngineFace const& _se, EnvInfo const& _envInfo, std::string const& _codeStr,
-        u256 const& _originalValue, u256 const& _expectedGasConsumed, u256 const& _expectedRefund)
+    void testEip1283Case1() { testGasConsumed("0x60006000556000600055", 0, 412, 0); }
+
+    void testEip1283Case2() { testGasConsumed("0x60006000556001600055", 0, 20212, 0); }
+
+    void testEip1283Case3() { testGasConsumed("0x60016000556000600055", 0, 20212, 19800); }
+
+    void testEip1283Case4() { testGasConsumed("0x60016000556002600055", 0, 20212, 0); }
+
+    void testEip1283Case5() { testGasConsumed("0x60016000556001600055", 0, 20212, 0); }
+
+    void testEip1283Case6() { testGasConsumed("0x60006000556000600055", 1, 5212, 15000); }
+
+    void testEip1283Case7() { testGasConsumed("0x60006000556001600055", 1, 5212, 4800); }
+
+    void testEip1283Case8() { testGasConsumed("0x60006000556002600055", 1, 5212, 0); }
+
+    void testEip1283Case9() { testGasConsumed("0x60026000556000600055", 1, 5212, 15000); }
+
+    void testEip1283Case10() { testGasConsumed("0x60026000556003600055", 1, 5212, 0); }
+
+    void testEip1283Case11() { testGasConsumed("0x60026000556001600055", 1, 5212, 4800); }
+
+    void testEip1283Case12() { testGasConsumed("0x60026000556002600055", 1, 5212, 0); }
+
+    void testEip1283Case13() { testGasConsumed("0x60016000556000600055", 1, 5212, 15000); }
+
+    void testEip1283Case14() { testGasConsumed("0x60016000556002600055", 1, 5212, 0); }
+
+    void testEip1283Case15() { testGasConsumed("0x60016000556001600055", 1, 412, 0); }
+
+    void testEip1283Case16()
+    {
+        testGasConsumed("0x600160005560006000556001600055", 0, 40218, 19800);
+    }
+
+    void testEip1283Case17()
+    {
+        testGasConsumed("0x600060005560016000556000600055", 1, 10218, 19800);
+    }
+
+    void testGasConsumed(std::string const& _codeStr, u256 const& _originalValue,
+        u256 const& _expectedGasConsumed, u256 const& _expectedRefund)
     {
         state.setStorage(to, 0, _originalValue);
         state.commit(State::CommitBehaviour::RemoveEmptyAccounts);
 
         bytes const code = fromHex(_codeStr);
-        ExtVM extVm(state, _envInfo, _se, to, from, from, value, gasPrice, inputData, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
+        ExtVM extVm(state, envInfo, *se, to, from, from, value, gasPrice, inputData, ref(code),
+            sha3(code), depth, isCreate, staticCall);
 
         u256 gasBefore = gas;
         owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
 
-        BOOST_CHECK_MESSAGE(gasBefore - gas == _expectedGasConsumed,
-            boost::format("code: %1%, gas consumed: %2%, gas expected: %3%") % _codeStr %
-                (gasBefore - gas) % _expectedGasConsumed);
-        BOOST_CHECK_MESSAGE(extVm.sub.refunds == _expectedRefund,
-            boost::format("code: %1%, refund: %2%, refund expected: %3%") % _codeStr %
-                extVm.sub.refunds % _expectedRefund);
+        BOOST_CHECK_EQUAL(gasBefore - gas, _expectedGasConsumed);
+        BOOST_CHECK_EQUAL(extVm.sub.refunds, _expectedRefund);
     }
 
-
-    void testAllCases(std::array<Case, 17> const& _cases, Network _network)
-    {
-        std::unique_ptr<SealEngineFace> se{ChainParams(genesisInfo(_network)).createSealEngine()};
-        EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-
-        for (auto const& c : _cases)
-            testGasConsumed(*se, envInfo, c.code, c.originalValue, c.expectedGasConsumed, c.expectedRefund);
-    }
-
-    void testConstantinople() { testAllCases(constantinopleCases, Network::ConstantinopleTest); }
-
-    void testPetersburg() { testAllCases(petersburgCases, Network::ConstantinopleFixTest); }
-
-    void testIstanbul() { testAllCases(istanbulCases, Network::IstanbulTest); }
-
-    void sstoreBelowStipend(Network _network)
-    {
-        // sstore(0, 0)
-        bytes const code = fromHex("6000600055");
-
-        std::unique_ptr<SealEngineFace> se{ChainParams(genesisInfo(_network)).createSealEngine()};
-        EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-        ExtVM extVm(state, envInfo, *se, to, from, from, value, gasPrice, inputData, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        u256 gas = 2300;
-        vm->exec(gas, extVm, OnOpFunc{});
-    }
-
-    void testSstoreBelowStipend()
-    {
-        sstoreBelowStipend(Network::ConstantinopleTest);  // shouldn't throw
-
-        BOOST_CHECK_THROW(sstoreBelowStipend(Network::ConstantinopleFixTest), OutOfGas);
-
-        BOOST_CHECK_THROW(sstoreBelowStipend(Network::IstanbulTest), OutOfGas);
-    }
 
     BlockHeader blockHeader{initBlockHeader()};
     LastBlockHashes lastBlockHashes;
+    EnvInfo envInfo{blockHeader, lastBlockHashes, 0};
     Address from{KeyPair::create().address()};
     Address to{KeyPair::create().address()};
     State state{0};
+    std::unique_ptr<SealEngineFace> se{
+        ChainParams(genesisInfo(Network::ConstantinopleTest)).createSealEngine()};
 
     u256 value = 0;
     u256 gasPrice = 1;
-    u256 version = 0;
     int depth = 0;
     bool isCreate = false;
     bool staticCall = false;
@@ -548,509 +485,7 @@ public:
 class AlethInterpreterSstoreTestFixture : public SstoreTestFixture
 {
 public:
-    AlethInterpreterSstoreTestFixture()
-      : SstoreTestFixture{new EVMC{evmc_create_aleth_interpreter(), {}}}
-    {}
-};
-
-class ChainIDTestFixture : public TestOutputHelperFixture
-{
-public:
-    explicit ChainIDTestFixture(VMFace* _vm) : vm{_vm} { state.addBalance(address, 1 * ether); }
-
-    void testChainIDWorksInIstanbul()
-    {
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        owning_bytes_ref ret = vm->exec(gas, extVm, OnOpFunc{});
-
-        BOOST_REQUIRE_EQUAL(fromBigEndian<int>(ret), 1);
-    }
-
-    void testChainIDHasCorrectCost()
-    {
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::CHAINID)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 2);
-    }
-
-    void testChainIDisInvalidBeforeIstanbul()
-    {
-        se.reset(ChainParams(genesisInfo(Network::ConstantinopleFixTest)).createSealEngine());
-        version = ConstantinopleFixSchedule.accountVersion;
-
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        BOOST_REQUIRE_THROW(vm->exec(gas, extVm, OnOpFunc{}), BadInstruction);
-    }
-
-
-    BlockHeader blockHeader{initBlockHeader()};
-    LastBlockHashes lastBlockHashes;
-    Address address{KeyPair::create().address()};
-    State state{0};
-    std::unique_ptr<SealEngineFace> se{
-        ChainParams(genesisInfo(Network::IstanbulTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-
-    u256 value = 0;
-    u256 gasPrice = 1;
-    u256 version = IstanbulSchedule.accountVersion;
-    int depth = 0;
-    bool isCreate = false;
-    bool staticCall = false;
-    u256 gas = 1000000;
-
-    // let id : = chainid()
-    // mstore(0, id)
-    // return(0, 32)
-    bytes code = fromHex("468060005260206000f350");
-
-    std::unique_ptr<VMFace> vm;
-};
-
-class LegacyVMChainIDTestFixture : public ChainIDTestFixture
-{
-public:
-    LegacyVMChainIDTestFixture() : ChainIDTestFixture{new LegacyVM} {}
-};
-
-class AlethInterpreterChainIDTestFixture : public ChainIDTestFixture
-{
-public:
-    AlethInterpreterChainIDTestFixture()
-      : ChainIDTestFixture{new EVMC{evmc_create_aleth_interpreter(), {}}}
-    {}
-};
-
-class BalanceFixture : public TestOutputHelperFixture
-{
-public:
-    explicit BalanceFixture(VMFace* _vm) : vm{_vm} { state.addBalance(address, 1 * ether); }
-
-    void testSelfBalanceWorksInIstanbul()
-    {
-        ExtVM extVmSelfBalance(state, envInfo, *se, address, address, address, value, gasPrice, {},
-            ref(codeSelfBalance), sha3(codeSelfBalance), version, depth, isCreate, staticCall);
-
-        owning_bytes_ref retSelfBalance = vm->exec(gas, extVmSelfBalance, OnOpFunc{});
-
-        BOOST_REQUIRE_EQUAL(fromBigEndian<u256>(retSelfBalance), 1 * ether);
-
-        ExtVM extVmBalance(state, envInfo, *se, address, address, address, value, gasPrice, {},
-            ref(codeBalance), sha3(codeBalance), version, depth, isCreate, staticCall);
-
-        owning_bytes_ref retBalance = vm->exec(gas, extVmBalance, OnOpFunc{});
-
-        BOOST_REQUIRE_EQUAL(fromBigEndian<u256>(retBalance), fromBigEndian<u256>(retSelfBalance));
-    }
-
-    void testSelfBalanceHasCorrectCost()
-    {
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {},
-            ref(codeSelfBalance), sha3(codeSelfBalance), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::SELFBALANCE)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 5);
-    }
-
-    void testBalanceHasCorrectCost()
-    {
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {},
-            ref(codeBalance), sha3(codeBalance), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::BALANCE)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 700);
-    }
-
-    void testSelfBalanceisInvalidBeforeIstanbul()
-    {
-        se.reset(ChainParams(genesisInfo(Network::ConstantinopleFixTest)).createSealEngine());
-        version = ConstantinopleFixSchedule.accountVersion;
-
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {},
-            ref(codeSelfBalance), sha3(codeSelfBalance), version, depth, isCreate, staticCall);
-
-        BOOST_REQUIRE_THROW(vm->exec(gas, extVm, OnOpFunc{}), BadInstruction);
-    }
-
-
-    BlockHeader blockHeader{initBlockHeader()};
-    LastBlockHashes lastBlockHashes;
-    Address address{KeyPair::create().address()};
-    State state{0};
-    std::unique_ptr<SealEngineFace> se{
-        ChainParams(genesisInfo(Network::IstanbulTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-
-    u256 value = 0;
-    u256 gasPrice = 1;
-    u256 version = IstanbulSchedule.accountVersion;
-    int depth = 0;
-    bool isCreate = false;
-    bool staticCall = false;
-    u256 gas = 1000000;
-
-    // let b : = selfbalance()
-    // mstore(0, b)
-    // return(0, 32)
-    bytes codeSelfBalance = fromHex("478060005260206000f350");
-
-    // let a := caller()
-    // let b := balance(a)
-    // mstore(0, b)
-    // return(0, 32)
-    bytes codeBalance = fromHex("3380318060005260206000f35050");
-
-    std::unique_ptr<VMFace> vm;
-};
-
-class LegacyVMBalanceFixture : public BalanceFixture
-{
-public:
-    LegacyVMBalanceFixture() : BalanceFixture{new LegacyVM} {}
-};
-
-class AlethInterpreterBalanceFixture : public BalanceFixture
-{
-public:
-    AlethInterpreterBalanceFixture() : BalanceFixture{new EVMC{evmc_create_aleth_interpreter(), {}}}
-    {}
-};
-
-class PrecompileCallFixture : public TestOutputHelperFixture
-{
-public:
-    explicit PrecompileCallFixture(VMFace* _vm) : vm{_vm} { state.addBalance(address, 1 * ether); }
-
-    void testCallHasCorrectCost()
-    {
-        // let r := call(10000, 0x4, 0, 0, 0, 0, 0)
-        bytes code = fromHex("600060006000600060006004612710f150");
-
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::CALL)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        // 700 for CALL and 15 for identity precompile with empty input
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 700 + 15);
-    }
-
-    void testStaticCallCostEqualToCallBeforeEIP2046()
-    {
-        // let r := staticcall(10000, 0x4, 0, 0, 0, 0)
-        bytes code = fromHex("60006000600060006004612710fa50");
-
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::STATICCALL)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        // 700 for STATICCALL and 15 for identity precompile with empty input
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 700 + 15);
-    }
-
-    void testStaticCallHasCorrectCostWithEIP2046()
-    {
-        // let r := staticcall(10000, 0x4, 0, 0, 0, 0)
-        bytes code = fromHex("60006000600060006004612710fa50");
-
-        AdditionalEIPs eips;
-        eips.eip2046 = true;
-        ChainParams cp{genesisInfo(Network::IstanbulTest), eips};
-
-        se.reset(cp.createSealEngine());
-
-        ExtVM extVm(state, envInfo, *se, address, address, address, value, gasPrice, {}, ref(code),
-            sha3(code), version, depth, isCreate, staticCall);
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (_instr == Instruction::STATICCALL)
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-
-        vm->exec(gas, extVm, onOp);
-
-        // 40 for STATICCALL and 15 for identity precompile with empty input
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, 40 + 15);
-    }
-
-    BlockHeader blockHeader{initBlockHeader()};
-    LastBlockHashes lastBlockHashes;
-    Address address{KeyPair::create().address()};
-    State state{0};
-    std::unique_ptr<SealEngineFace> se{
-        ChainParams(genesisInfo(Network::BerlinTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-
-    u256 value = 0;
-    u256 gasPrice = 1;
-    u256 version = BerlinSchedule.accountVersion;
-    int depth = 0;
-    bool isCreate = false;
-    bool staticCall = false;
-    u256 gas = 1000000;
-
-    std::unique_ptr<VMFace> vm;
-};
-
-class LegacyVMPrecompileCallFixture : public PrecompileCallFixture
-{
-public:
-    LegacyVMPrecompileCallFixture() : PrecompileCallFixture{new LegacyVM} {}
-};
-
-class CallFixture : public TestOutputHelperFixture
-{
-public:
-    explicit CallFixture(VMFace* _vm) : vm{_vm}
-    {
-        state.addBalance(myAddress, 2 * ether);
-        state.addBalance(otherAddress, 2 * ether);
-    }
-
-    void testCallCorrectCost(bool _createNewAccount = false, bool _callSelf = false)
-    {
-        assert(!_createNewAccount || !_callSelf);
-
-        // Note: Code passes destination address in via input data. rshift 96 bytes so that correct
-        // 20 bytes are selected during bits -> address conversion in VM (which is BE)
-        //
-        //	let destination : = shr(96, calldataload(0))
-        //  let foo : = call(50000, destination, 1000000000000000000, 0, 0, 0, 0)
-        auto const codeBytes =
-            fromHex("60003560601c6000600060006000670de0b6b3a76400008561c350f15050");
-        auto calleeAddress = otherAddress;
-        if (_createNewAccount)
-            calleeAddress = newAddress;
-        else if (_callSelf)
-            calleeAddress = myAddress;
-        ExtVM extVm{state, envInfo, *se, myAddress, myAddress, myAddress, value, gasPrice,
-            calleeAddress.ref(), ref(codeBytes), sha3(codeBytes), version,
-            static_cast<unsigned int>(depth), isCreate, false /* static call */};
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (CallFixture::IsCallOp(_instr))
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-        vm->exec(gas, extVm, onOp);
-        // Subtract the call stipend gas since there's no code at the address being called
-        unsigned int gasExpected =
-            extVm.evmSchedule().callValueTransferGas - extVm.evmSchedule().callStipend;
-        if (_callSelf)
-            gasExpected += extVm.evmSchedule().callSelfGas;
-        else
-        {
-            gasExpected += extVm.evmSchedule().callGas;
-            if (_createNewAccount)
-                gasExpected += extVm.evmSchedule().callNewAccountGas;
-        }
-
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, gasExpected);
-    }
-
-    void testCallCodeCorrectCost(bool _callSelf = false)
-    {
-        // Note: Code passes destination address in via input data. rshift 96 bytes so that correct
-        // 20 bytes are selected during bits -> address conversion in VM (which is BE)
-        //
-        // let destination : = shr(96, calldataload(0))
-        // let foo : = callcode(50000, destination, 0, 0, 0, 0, 0)
-        auto const codeBytes = fromHex("60003560601c600060006000600060008561c350f25050");
-        auto calleeAddress = !_callSelf ? otherAddress : myAddress;
-        ExtVM extVm{state, envInfo, *se, myAddress, myAddress, myAddress, value, gasPrice,
-            calleeAddress.ref(), ref(codeBytes), sha3(codeBytes), version,
-            static_cast<unsigned int>(depth), isCreate, false /* static call */};
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (CallFixture::IsCallOp(_instr))
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-        vm->exec(gas, extVm, onOp);
-        auto const gasExpected =
-            !_callSelf ? extVm.evmSchedule().callGas : extVm.evmSchedule().callSelfGas;
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, gasExpected);
-    }
-
-    void testStaticCallCorrectCost(bool _callSelf = false)
-    {
-        // Note: Code passes destination address in via input data. rshift 96 bytes so that correct
-        // 20 bytes are selected during bits -> address conversion in VM (which is BE)
-        //
-        // let destination : = shr(96, calldataload(0))
-        // let foo : = staticcall(50000, destination, 0, 0, 0, 0)
-        auto calleeAddress = !_callSelf ? otherAddress : myAddress;
-        auto const codeBytes = fromHex("60003560601c60006000600060008461c350fa5050");
-        ExtVM extVm{state, envInfo, *se, myAddress, myAddress, myAddress, value, gasPrice,
-            calleeAddress.ref(), ref(codeBytes), sha3(codeBytes), version,
-            static_cast<unsigned int>(depth), isCreate, true /* static call */};
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (CallFixture::IsCallOp(_instr))
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-        vm->exec(gas, extVm, onOp);
-        auto const gasExpected =
-            !_callSelf ? extVm.evmSchedule().callGas : extVm.evmSchedule().callSelfGas;
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, gasExpected);
-    }
-
-    void testDelegateCallCorrectCost(bool _callSelf = false)
-    {
-        // Note: Code passes destination address in via input data. rshift 96 bytes so that correct
-        // 20 bytes are selected during bits -> address conversion in VM (which is BE)
-        //
-        // let destination : = shr(96, calldataload(0))
-        // let foo : = delegatecall(50000, destination, 0, 0, 0, 0)
-        auto const codeBytes = fromHex("60003560601c60006000600060008461c350f45050");
-        auto const calleeAddress = !_callSelf ? otherAddress : myAddress;
-        ExtVM extVm{state, envInfo, *se, myAddress, myAddress, myAddress, value, gasPrice,
-            calleeAddress.ref(), ref(codeBytes), sha3(codeBytes), version,
-            static_cast<unsigned int>(depth), isCreate, false /* static call */};
-
-        bigint gasBefore;
-        bigint gasAfter;
-        auto onOp = [&gasBefore, &gasAfter](uint64_t /*steps*/, uint64_t /* PC */,
-                        Instruction _instr, bigint /*newMemSize*/, bigint /*gasCost*/, bigint _gas,
-                        VMFace const*, ExtVMFace const*) {
-            if (CallFixture::IsCallOp(_instr))
-                gasBefore = _gas;
-            else if (gasBefore != 0 && gasAfter == 0)
-                gasAfter = _gas;
-        };
-        vm->exec(gas, extVm, onOp);
-        auto const gasExpected =
-            !_callSelf ? extVm.evmSchedule().callGas : extVm.evmSchedule().callSelfGas;
-        BOOST_REQUIRE_EQUAL(gasBefore - gasAfter, gasExpected);
-    }
-
-    BlockHeader const blockHeader{initBlockHeader()};
-    LastBlockHashes const lastBlockHashes;
-    Address const myAddress{KeyPair::create().address()};
-    Address const otherAddress{KeyPair::create().address()};
-    Address const newAddress{KeyPair::create().address()};
-    State state{0};
-    std::unique_ptr<SealEngineFace> se{
-        ChainParams(genesisInfo(Network::BerlinTest)).createSealEngine()};
-    EnvInfo envInfo{blockHeader, lastBlockHashes, 0, se->chainParams().chainID};
-
-    u256 const value = 0;
-    u256 const gasPrice = 1;
-    u256 const version = BerlinSchedule.accountVersion;
-    int const depth = 0;
-    bool const isCreate = false;
-    u256 gas = 1000000;
-
-    std::unique_ptr<VMFace> vm;
-
-private:
-    static bool IsCallOp(Instruction _instr)
-    {
-        switch (_instr)
-        {
-        case Instruction::CALL:
-        case Instruction::CALLCODE:
-        case Instruction::DELEGATECALL:
-        case Instruction::STATICCALL:
-            return true;
-        default:
-            break;
-        }
-        return false;
-    }
-};
-
-class LegacyVMCallFixture : public CallFixture
-{
-public:
-    LegacyVMCallFixture() : CallFixture{new LegacyVM} {};
+    AlethInterpreterSstoreTestFixture() : SstoreTestFixture{new EVMC{evmc_create_interpreter()}} {}
 };
 
 }  // namespace
@@ -1146,135 +581,92 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_FIXTURE_TEST_SUITE(LegacyVMSstoreSuite, LegacyVMSstoreTestFixture)
 
-BOOST_AUTO_TEST_CASE(LegacyVMSstoreConstantinople)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case1)
 {
-    testConstantinople();
+    testEip1283Case1();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMSstorePetersburg)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case2)
 {
-    testPetersburg();
+    testEip1283Case2();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMSstoreIstanbul)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case3)
 {
-    testIstanbul();
+    testEip1283Case3();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMSstoreBelowStipend)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case4)
 {
-    testSstoreBelowStipend();
+    testEip1283Case4();
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-BOOST_FIXTURE_TEST_SUITE(LegacyVMChainIDSuite, LegacyVMChainIDTestFixture)
-
-BOOST_AUTO_TEST_CASE(LegacyVMChainIDworksInIstanbul)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case5)
 {
-    testChainIDWorksInIstanbul();
+    testEip1283Case5();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMChainIDHasCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case6)
 {
-    testChainIDHasCorrectCost();
+    testEip1283Case6();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMChainIDisInvalidBeforeIstanbul)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case7)
 {
-    testChainIDisInvalidBeforeIstanbul();
-}
-BOOST_AUTO_TEST_SUITE_END()
-
-BOOST_FIXTURE_TEST_SUITE(LegacyVMBalanceSuite, LegacyVMBalanceFixture)
-
-BOOST_AUTO_TEST_CASE(LegacyVMSelfBalanceworksInIstanbul)
-{
-    testSelfBalanceWorksInIstanbul();
+    testEip1283Case7();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMSelfBalanceHasCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case8)
 {
-    testSelfBalanceHasCorrectCost();
+    testEip1283Case8();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMBalanceHasCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case9)
 {
-    testBalanceHasCorrectCost();
+    testEip1283Case9();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMSelfBalanceisInvalidBeforeIstanbul)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case10)
 {
-    testSelfBalanceisInvalidBeforeIstanbul();
-}
-BOOST_AUTO_TEST_SUITE_END()
-
-BOOST_FIXTURE_TEST_SUITE(LegacyVMPrecompileCallSuite, LegacyVMPrecompileCallFixture)
-
-BOOST_AUTO_TEST_CASE(LegacyVMCallHasCorrectCost)
-{
-    testCallHasCorrectCost();
+    testEip1283Case10();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMStaticCallCostEqualToCallBeforeEIP2046)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case11)
 {
-    testStaticCallCostEqualToCallBeforeEIP2046();
+    testEip1283Case11();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMStaticCallHasCorrectCostWithEIP2046)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case12)
 {
-    testStaticCallHasCorrectCostWithEIP2046();
+    testEip1283Case12();
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-BOOST_FIXTURE_TEST_SUITE(LegacyVMCallSuite, LegacyVMCallFixture)
-
-BOOST_AUTO_TEST_CASE(LegacyVMCallCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case13)
 {
-    testCallCorrectCost();
+    testEip1283Case13();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMCallNewAccountCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case14)
 {
-    testCallCorrectCost(true /* create new account? */);
+    testEip1283Case14();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMCallSelfCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case15)
 {
-    testCallCorrectCost(false /* create new account? */, true /* call self */);
+    testEip1283Case15();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMCallCodeCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case16)
 {
-    testCallCodeCorrectCost();
+    testEip1283Case16();
 }
 
-BOOST_AUTO_TEST_CASE(LegacyVMCallCodeSelfCorrectCost)
+BOOST_AUTO_TEST_CASE(LegacyVMSstoreEip1283Case17)
 {
-    testCallCodeCorrectCost(true /* call self */);
-}
-
-BOOST_AUTO_TEST_CASE(LegacyVMStaticCallCorrectCost)
-{
-    testStaticCallCorrectCost();
-}
-
-BOOST_AUTO_TEST_CASE(LegacyVMStaticCallSelfCorrectCost)
-{
-    testStaticCallCorrectCost(true /* call self */);
-}
-
-BOOST_AUTO_TEST_CASE(LegacyVMTestDelegateCallCorrectCost)
-{
-    testDelegateCallCorrectCost();
-}
-
-BOOST_AUTO_TEST_CASE(LegacyVMTestDelegateCallSelfCorrectCost)
-{
-    testDelegateCallCorrectCost(true /* call self */);
+    testEip1283Case17();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
-
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_FIXTURE_TEST_SUITE(AlethInterpreterSuite, TestOutputHelperFixture)
@@ -1358,52 +750,91 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_FIXTURE_TEST_SUITE(AlethInterpreterSstoreSuite, AlethInterpreterSstoreTestFixture)
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreConstantinople)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case1)
 {
-    testConstantinople();
+    testEip1283Case1();
 }
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterSstorePetersburg)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case2)
 {
-    testPetersburg();
+    testEip1283Case2();
 }
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreIstanbul)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case3)
 {
-    testIstanbul();
+    testEip1283Case3();
 }
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreBelowStipend)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case4)
 {
-    testSstoreBelowStipend();
+    testEip1283Case4();
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-
-BOOST_FIXTURE_TEST_SUITE(AlethInterpreterChainIDSuite, AlethInterpreterChainIDTestFixture)
-
-BOOST_AUTO_TEST_CASE(AlethInterpreterChainIDworksInIstanbul)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case5)
 {
-    testChainIDWorksInIstanbul();
+    testEip1283Case5();
 }
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterChainIDisInvalidBeforeIstanbul)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case6)
 {
-    testChainIDisInvalidBeforeIstanbul();
-}
-BOOST_AUTO_TEST_SUITE_END()
-
-BOOST_FIXTURE_TEST_SUITE(AlethInterpreterBalanceSuite, AlethInterpreterBalanceFixture)
-
-BOOST_AUTO_TEST_CASE(AlethInterpreterSelfBalanceworksInIstanbul)
-{
-    testSelfBalanceWorksInIstanbul();
+    testEip1283Case6();
 }
 
-BOOST_AUTO_TEST_CASE(AlethInterpreterSelfBalanceisInvalidBeforeIstanbul)
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case7)
 {
-    testSelfBalanceisInvalidBeforeIstanbul();
+    testEip1283Case7();
 }
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case8)
+{
+    testEip1283Case8();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case9)
+{
+    testEip1283Case9();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case10)
+{
+    testEip1283Case10();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case11)
+{
+    testEip1283Case11();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case12)
+{
+    testEip1283Case12();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case13)
+{
+    testEip1283Case13();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case14)
+{
+    testEip1283Case14();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case15)
+{
+    testEip1283Case15();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case16)
+{
+    testEip1283Case16();
+}
+
+BOOST_AUTO_TEST_CASE(AlethInterpreterSstoreEip1283Case17)
+{
+    testEip1283Case17();
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE_END()

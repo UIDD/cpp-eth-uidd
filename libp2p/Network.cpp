@@ -1,7 +1,25 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
 
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+/** @file Network.cpp
+ * @author Alex Leverington <nessence@gmail.com>
+ * @author Gav Wood <i@gavwood.com>
+ * @author Eric Lombrozo <elombrozo@gmail.com> (Windows version of getInterfaceAddresses())
+ * @date 2014
+ */
 
 #include <sys/types.h>
 #ifndef _WIN32
@@ -55,7 +73,7 @@ std::set<bi::address> Network::getInterfaceAddresses()
         struct in_addr addr;
         memcpy(&addr, phe->h_addr_list[i], sizeof(struct in_addr));
         char *addrStr = inet_ntoa(addr);
-        bi::address address(bi::make_address(addrStr));
+        bi::address address(bi::address::from_string(addrStr));
         if (!isLocalHostAddress(address))
             addresses.insert(address.to_v4());
     }
@@ -111,8 +129,7 @@ int Network::tcp4Listen(bi::tcp::acceptor& _acceptor, NetworkConfig const& _conf
     bi::address listenIP;
     try
     {
-        listenIP = _config.listenIPAddress.empty() ? bi::address_v4() :
-                                                     bi::make_address(_config.listenIPAddress);
+        listenIP = _config.listenIPAddress.empty() ? bi::address_v4() : bi::address::from_string(_config.listenIPAddress);
     }
     catch (...)
     {
@@ -181,7 +198,7 @@ bi::tcp::endpoint Network::traverseNAT(std::set<bi::address> const& _ifAddresses
             }
 
         auto eIP = upnp->externalIP();
-        bi::address eIPAddr(bi::make_address(eIP));
+        bi::address eIPAddr(bi::address::from_string(eIP));
         if (extPort && eIP != string("0.0.0.0") && !isPrivateAddress(eIPAddr))
         {
             cnetnote << "Punched through NAT and mapped local port " << _listenPort << " onto external port " << extPort << ".";
@@ -198,7 +215,7 @@ bi::tcp::endpoint Network::traverseNAT(std::set<bi::address> const& _ifAddresses
 
 bi::tcp::endpoint Network::resolveHost(string const& _addr)
 {
-    static boost::asio::io_context s_resolverIoContext;
+    static boost::asio::io_service s_resolverIoService;
 
     vector<string> split;
     boost::split(split, _addr, boost::is_any_of(":"));
@@ -212,7 +229,7 @@ bi::tcp::endpoint Network::resolveHost(string const& _addr)
     catch(...) {}
 
     boost::system::error_code ec;
-    bi::address address = bi::make_address(split[0], ec);
+    bi::address address = bi::address::from_string(split[0], ec);
     bi::tcp::endpoint ep(bi::address(), port);
     if (!ec)
         ep.address(address);
@@ -220,15 +237,15 @@ bi::tcp::endpoint Network::resolveHost(string const& _addr)
     {
         boost::system::error_code ec;
         // resolve returns an iterator (host can resolve to multiple addresses)
-        bi::tcp::resolver r(s_resolverIoContext);
-        auto res = r.resolve(bi::tcp::v4(), split[0], toString(port), ec);
-        if (ec || res.empty())
+        bi::tcp::resolver r(s_resolverIoService);
+        auto it = r.resolve({bi::tcp::v4(), split[0], toString(port)}, ec);
+        if (ec)
         {
             cnetlog << "Error resolving host address... " << _addr << " : " << ec.message();
             return bi::tcp::endpoint();
         }
         else
-            ep = *res;
+            ep = *it;
     }
     return ep;
 }

@@ -1,6 +1,7 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2015-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+// Copyright 2019 cpp-ethereum Authors.
+// Licensed under the GNU General Public License v3.
+
 #pragma once
 
 #include "Common.h"

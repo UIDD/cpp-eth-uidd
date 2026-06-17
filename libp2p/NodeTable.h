@@ -1,15 +1,15 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
+// Copyright 2018 Aleth Authors.
 // Licensed under the GNU General Public License, Version 3.
 
 #pragma once
 
-#include "Common.h"
-#include "ENR.h"
-#include "EndpointTracker.h"
-#include <libp2p/UDP.h>
-#include <boost/integer/static_log2.hpp>
 #include <algorithm>
+
+#include <boost/integer/static_log2.hpp>
+
+#include <libp2p/UDP.h>
+#include "Common.h"
 
 namespace dev
 {
@@ -64,7 +64,6 @@ class NodeTable;
 inline std::ostream& operator<<(std::ostream& _out, NodeTable const& _nodeTable);
 
 struct NodeEntry;
-struct DiscoveryDatagram;
 
 /**
  * NodeTable using modified kademlia for node discovery and preference.
@@ -107,30 +106,18 @@ public:
     // Period during which we consider last PONG results to be valid before sending new PONG
     static constexpr uint32_t c_bondingTimeSeconds{12 * 60 * 60};
 
-    /// Constructor requiring host for I/O, credentials, and IP Address, port to listen on 
-    /// and host ENR.
-    NodeTable(ba::io_context& _io, KeyPair const& _alias, NodeIPEndpoint const& _endpoint,
-        ENR const& _enr, bool _enabled = true, bool _allowLocalDiscovery = false);
+    /// Constructor requiring host for I/O, credentials, and IP Address and port to listen on.
+    NodeTable(ba::io_service& _io, KeyPair const& _alias, NodeIPEndpoint const& _endpoint,
+        bool _enabled = true, bool _allowLocalDiscovery = false);
+    ~NodeTable() { stop(); }
 
     /// Returns distance based on xor metric two node ids. Used by NodeEntry and NodeTable.
-    static int distance(h256 const& _a, h256 const& _b)
-    {
-        u256 d = _a ^ _b;
-        unsigned ret = 0;
-        while (d >>= 1)
-            ++ret;
-        return ret;
-    }
+    static int distance(NodeID const& _a, NodeID const& _b) { u256 d = sha3(_a) ^ sha3(_b); unsigned ret; for (ret = 0; d >>= 1; ++ret) {}; return ret; }
 
     void stop()
     {
-        if (m_socket->isOpen())
-        {
-            cancelTimer(m_discoveryTimer);
-            cancelTimer(m_timeoutsTimer);
-            cancelTimer(m_endpointTrackingTimer);
-            m_socket->disconnect();
-        }
+        m_socket->disconnect();
+        m_timers.stop();
     }
 
     /// Set event handler for NodeEntryAdded and NodeEntryDropped events.
@@ -139,17 +126,14 @@ public:
     /// Called by implementation which provided handler to process NodeEntryAdded/NodeEntryDropped events. Events are coalesced by type whereby old events are ignored.
     void processEvents();
 
-    /// Starts async node add to the node table by pinging it to trigger the endpoint proof.
-    /// In case the node is already in the node table, pings only if the endpoint proof expired.
+    /// Add node to the list of all nodes and ping it to trigger the endpoint proof.
     ///
-    /// @return True if the node is valid.
+    /// @return True if the node has been added.
     bool addNode(Node const& _node);
 
     /// Add node to the list of all nodes and add it to the node table.
-    /// In case the node's endpoint proof expired, pings it.
-    /// In case the nodes is already in the node table, ignores add request.
     ///
-    /// @return True if the node is valid.
+    /// @return True if the node has been added to the table.
     bool addKnownNode(
         Node const& _node, uint32_t _lastPongReceivedTime, uint32_t _lastPongSentTime);
 
@@ -176,45 +160,17 @@ public:
     /// Returns the Node to the corresponding node id or the empty Node if that id is not found.
     Node node(NodeID const& _id);
 
-    ENR hostENR() const
-    {
-        Guard l(m_hostENRMutex);
-        return m_hostENR;
-    }
-
-    void runBackgroundTask(std::chrono::milliseconds const& _period,
-        std::shared_ptr<ba::steady_timer> _timer, std::function<void()> _f);
-
-    void cancelTimer(std::shared_ptr<ba::steady_timer> _timer);
-
-    // protected only for derived classes in tests
+// protected only for derived classes in tests
 protected:
     /**
-     * NodeValidation is used to record information about the nodes that we have sent Ping to.
+     * NodeValidation is used to record the timepoint of sent PING,
+     * time of sending and the new node ID to replace unresponsive node.
      */
     struct NodeValidation
     {
-        // Public key of the target node
-        NodeID nodeID;
-        // We receive TCP port in the Ping packet, and store it here until it passes endpoint proof
-        // (answers with Pong), then it will be added to the bucket of the node table
-        uint16_t tcpPort = 0;
-        // Time we sent Ping - used to handle timeouts
-        TimePoint pingSentTime;
-        // Hash of the sent Ping packet - used to validate received Pong
+        TimePoint pingSendTime;
         h256 pingHash;
-        // Replacement is put into the node table,
-        // if original pinged node doesn't answer after timeout
-        std::shared_ptr<NodeEntry> replacementNodeEntry;
-
-        NodeValidation(NodeID const& _nodeID, uint16_t _tcpPort, TimePoint const& _pingSentTime,
-            h256 const& _pingHash, std::shared_ptr<NodeEntry> _replacementNodeEntry)
-          : nodeID{_nodeID},
-            tcpPort{_tcpPort},
-            pingSentTime{_pingSentTime},
-            pingHash{_pingHash},
-            replacementNodeEntry{std::move(_replacementNodeEntry)}
-        {}
+        boost::optional<NodeID> replacementNodeID;
     };
 
     /// Constants for Kademlia, derived from address space.
@@ -231,12 +187,12 @@ protected:
 
     /// Intervals
 
+    /// Interval at which eviction timeouts are checked.
+    static constexpr std::chrono::milliseconds c_evictionCheckInterval{75};
     /// How long to wait for requests (evict, find iterations).
-    static constexpr std::chrono::milliseconds c_reqTimeoutMs{300};
-    /// How long to wait before starting a new discovery round
-    static constexpr std::chrono::milliseconds c_discoveryRoundIntervalMs{c_reqTimeoutMs * 2};
+    static constexpr std::chrono::milliseconds c_reqTimeout{300};
     /// Refresh interval prevents bucket from becoming stale. [Kademlia]
-    static constexpr std::chrono::milliseconds c_bucketRefreshMs{7200};
+    static constexpr std::chrono::milliseconds c_bucketRefresh{7200};
 
     struct NodeBucket
     {
@@ -244,37 +200,30 @@ protected:
         std::list<std::weak_ptr<NodeEntry>> nodes;
     };
 
-    /// @return true if the node is valid to be added to the node table.
-    /// (validates node ID and endpoint)
-    bool isValidNode(Node const& _node) const;
+    std::shared_ptr<NodeEntry> createNodeEntry(
+        Node const& _node, uint32_t _lastPongReceivedTime, uint32_t _lastPongSentTime);
 
     /// Used to ping a node to initiate the endpoint proof. Used when contacting neighbours if they
-    /// don't have a valid endpoint proof (see doDiscoveryRound), refreshing buckets and as part of
-    /// eviction process (see evict). Synchronous, has to be called only from the network thread.
-    void ping(Node const& _node, std::shared_ptr<NodeEntry> _replacementNodeEntry = {});
-
-    /// Schedules ping() method to be called from the network thread.
-    /// Not synchronous - the ping operation is queued via a timer.
-    void schedulePing(Node const& _node);
+    /// don't have a valid endpoint proof (see doDiscover), refreshing buckets and as part of
+    /// eviction process (see evict). Not synchronous - the ping operation is queued via a timer
+    void ping(NodeEntry const& _nodeEntry, boost::optional<NodeID> const& _replacementNodeID = {});
 
     /// Used by asynchronous operations to return NodeEntry which is active and managed by node table.
-    std::shared_ptr<NodeEntry> nodeEntry(NodeID const& _id);
+    std::shared_ptr<NodeEntry> nodeEntry(NodeID _id);
 
     /// Used to discovery nodes on network which are close to the given target.
     /// Sends s_alpha concurrent requests to nodes nearest to target, for nodes nearest to target, up to s_maxSteps rounds.
-    void doDiscoveryRound(NodeID _target, unsigned _round,
-        std::shared_ptr<std::set<std::shared_ptr<NodeEntry>>> _tried);
+    void doDiscover(NodeID _target, unsigned _round, std::shared_ptr<std::set<std::shared_ptr<NodeEntry>>> _tried);
 
-    /// Returns s_bucketSize nodes from node table which are closest to target.
-    std::vector<std::shared_ptr<NodeEntry>> nearestNodeEntries(NodeID const& _target);
+    /// Returns nodes from node table which are closest to target.
+    std::vector<std::shared_ptr<NodeEntry>> nearestNodeEntries(NodeID _target);
 
-    /// Asynchronously drops _leastSeen node if it doesn't reply and adds _replacement node,
-    /// otherwise _replacement is thrown away.
-    void evict(NodeEntry const& _leastSeen, std::shared_ptr<NodeEntry> _replacement);
+    /// Asynchronously drops _leastSeen node if it doesn't reply and adds _new node, otherwise _new node is thrown away.
+    void evict(NodeEntry const& _leastSeen, NodeEntry const& _new);
 
     /// Called whenever activity is received from a node in order to maintain node table. Only
     /// called for nodes for which we've completed an endpoint proof.
-    void noteActiveNode(std::shared_ptr<NodeEntry> _nodeEntry);
+    void noteActiveNode(Public const& _pubk, bi::udp::endpoint const& _endpoint);
 
     /// Used to drop node when timeout occurs or when evict() result is to keep previous node.
     void dropNode(std::shared_ptr<NodeEntry> _n);
@@ -290,33 +239,18 @@ protected:
     void onPacketReceived(
         UDPSocketFace*, bi::udp::endpoint const& _from, bytesConstRef _packet) override;
 
-    std::shared_ptr<NodeEntry> handlePong(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-    std::shared_ptr<NodeEntry> handleNeighbours(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-    std::shared_ptr<NodeEntry> handleFindNode(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-    std::shared_ptr<NodeEntry> handlePingNode(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-    std::shared_ptr<NodeEntry> handleENRRequest(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-    std::shared_ptr<NodeEntry> handleENRResponse(
-        bi::udp::endpoint const& _from, DiscoveryDatagram const& _packet);
-
     /// Called by m_socket when socket is disconnected.
     void onSocketDisconnected(UDPSocketFace*) override {}
 
     /// Tasks
 
+    /// Called by evict() to ensure eviction check is scheduled to run and terminates when no evictions remain. Asynchronous.
+    void doCheckEvictions();
+
     /// Looks up a random node at @c_bucketRefresh interval.
     void doDiscovery();
 
-    /// Clear timed-out pings and drop nodes from the node table which haven't responded to ping and
-    /// bring in their replacements
     void doHandleTimeouts();
-
-    // Remove old records in m_endpointTracker.
-    void doEndpointTracking();
 
     // Useful only for tests.
     void setRequestTimeToLive(std::chrono::seconds const& _time) { m_requestTimeToLive = _time; }
@@ -334,19 +268,14 @@ protected:
     std::unique_ptr<NodeTableEventHandler> m_nodeEventHandler;		///< Event handler for node events.
 
     NodeID const m_hostNodeID;
-    h256 const m_hostNodeIDHash;
-    // Host IP address given to constructor
-    bi::address const m_hostStaticIP;
-    // Dynamically updated host endpoint
     NodeIPEndpoint m_hostNodeEndpoint;
-    ENR m_hostENR;
-    mutable Mutex m_hostENRMutex;
     Secret m_secret;												///< This nodes secret key.
 
     mutable Mutex x_nodes;											///< LOCK x_state first if both locks are required. Mutable for thread-safe copy in nodes() const.
 
-    /// Node endpoints. Includes all nodes that were added into node table's buckets
-    /// and have not been evicted yet.
+    /// Node endpoints. Includes all nodes that we've been in contact with and which haven't been
+    /// evicted. This includes nodes for which we both have and haven't completed the endpoint
+    /// proof.
     std::unordered_map<NodeID, std::shared_ptr<NodeEntry>> m_allNodes;
 
     mutable Mutex x_state;											///< LOCK x_state first if both x_nodes and x_state locks are required.
@@ -359,7 +288,7 @@ protected:
     std::shared_ptr<NodeSocket> m_socket;							///< Shared pointer for our UDPSocket; ASIO requires shared_ptr.
 
     // The info about PING packets we've sent to other nodes and haven't received PONG yet
-    std::map<bi::udp::endpoint, NodeValidation> m_sentPings;
+    std::unordered_map<NodeID, NodeValidation> m_sentPings;
 
     // Expiration time of sent discovery packets.
     std::chrono::seconds m_requestTimeToLive;
@@ -368,26 +297,19 @@ protected:
 
     bool m_allowLocalDiscovery;                                     ///< Allow nodes with local addresses to be included in the discovery process
 
-    EndpointTracker m_endpointTracker;
-
-    std::shared_ptr<ba::steady_timer> m_discoveryTimer;
-    std::shared_ptr<ba::steady_timer> m_timeoutsTimer;
-    std::shared_ptr<ba::steady_timer> m_endpointTrackingTimer;
-
-    ba::io_context& m_io;
+    DeadlineOps m_timers; ///< this should be the last member - it must be destroyed first
 };
 
 /**
  * NodeEntry
  * @brief Entry in Node Table
  */
-struct NodeEntry
+struct NodeEntry : public Node
 {
-    NodeEntry(h256 const& _hostNodeIDHash, Public const& _pubk, NodeIPEndpoint const& _gw,
+    NodeEntry(NodeID const& _src, Public const& _pubk, NodeIPEndpoint const& _gw,
         uint32_t _pongReceivedTime, uint32_t _pongSentTime)
-      : node(_pubk, _gw),
-        nodeIDHash(sha3(_pubk)),
-        distance(NodeTable::distance(_hostNodeIDHash, nodeIDHash)),
+      : Node(_pubk, _gw),
+        distance(NodeTable::distance(_src, _pubk)),
         lastPongReceivedTime(_pongReceivedTime),
         lastPongSentTime(_pongSentTime)
     {}
@@ -396,13 +318,8 @@ struct NodeEntry
         return RLPXDatagramFace::secondsSinceEpoch() <
                lastPongReceivedTime + NodeTable::c_bondingTimeSeconds;
     }
-    NodeID const& id() const { return node.id; }
-    NodeIPEndpoint const& endpoint() const { return node.endpoint; }
-    PeerType peerType() const { return node.peerType; }
 
-    Node node;
-    h256 const nodeIDHash;
-    int const distance = 0;  ///< Node's distance (xor of _hostNodeIDHash as integer).
+    int const distance = 0;  ///< Node's distance (xor of _src as integer).
     uint32_t lastPongReceivedTime = 0;
     uint32_t lastPongSentTime = 0;
 };
@@ -414,17 +331,18 @@ inline std::ostream& operator<<(std::ostream& _out, NodeTable const& _nodeTable)
          << _nodeTable.m_hostNodeEndpoint.udpPort() << std::endl;
     auto s = _nodeTable.snapshot();
     for (auto n: s)
-        _out << n.id() << "\t" << n.distance << "\t" << n.endpoint() << "\n";
+        _out << n.address() << "\t" << n.distance << "\t" << n.endpoint.address() << ":"
+             << n.endpoint.udpPort() << std::endl;
     return _out;
 }
 
 struct DiscoveryDatagram: public RLPXDatagramFace
 {
-    static constexpr std::chrono::seconds c_timeToLiveS{60};
+    static constexpr std::chrono::seconds c_timeToLive{60};
 
     /// Constructor used for sending.
     DiscoveryDatagram(bi::udp::endpoint const& _to)
-      : RLPXDatagramFace(_to), expiration(futureFromEpoch(c_timeToLiveS))
+      : RLPXDatagramFace(_to), ts(futureFromEpoch(c_timeToLive))
     {}
 
     /// Constructor used for parsing inbound packets.
@@ -434,14 +352,10 @@ struct DiscoveryDatagram: public RLPXDatagramFace
     NodeID sourceid; // sender public key (from signature)
     h256 echo;       // hash of encoded packet, for reply tracking
 
-    // Most discovery packets carry a timestamp, which must be greater
+    // All discovery packets carry a timestamp, which must be greater
     // than the current local time. This prevents replay attacks.
-    // Optional because some packets (ENRResponse) don't have it
-    boost::optional<uint32_t> expiration;
-    bool isExpired() const
-    {
-        return expiration.is_initialized() && secondsSinceEpoch() > *expiration;
-    }
+    uint32_t ts = 0;
+    bool isExpired() const { return secondsSinceEpoch() > ts; }
 
     /// Decodes UDP packets.
     static std::unique_ptr<DiscoveryDatagram> interpretUDP(bi::udp::endpoint const& _from, bytesConstRef _packet);
@@ -449,7 +363,7 @@ struct DiscoveryDatagram: public RLPXDatagramFace
 
 /**
  * Ping packet: Sent to check if node is alive.
- * PingNode is cached and regenerated after timestamp + t, where t is timeout.
+ * PingNode is cached and regenerated after ts + t, where t is timeout.
  *
  * Ping is used to implement evict. When a new node is seen for
  * a given bucket which is full, the least-responsive node is pinged.
@@ -462,23 +376,20 @@ struct PingNode: DiscoveryDatagram
     PingNode(NodeIPEndpoint const& _src, NodeIPEndpoint const& _dest): DiscoveryDatagram(_dest), source(_src), destination(_dest) {}
     PingNode(bi::udp::endpoint const& _from, NodeID const& _fromid, h256 const& _echo): DiscoveryDatagram(_from, _fromid, _echo) {}
 
-    static constexpr uint8_t type = 1;
+    static const uint8_t type = 1;
     uint8_t packetType() const override { return type; }
 
     unsigned version = 0;
     NodeIPEndpoint source;
     NodeIPEndpoint destination;
-    boost::optional<uint64_t> seq;
 
     void streamRLP(RLPStream& _s) const override
     {
-        _s.appendList(seq.is_initialized() ? 5 : 4);
+        _s.appendList(4);
         _s << dev::p2p::c_protocolVersion;
         source.streamRLP(_s);
         destination.streamRLP(_s);
-        _s << *expiration;
-        if (seq.is_initialized())
-            _s << *seq;
+        _s << ts;
     }
     void interpretRLP(bytesConstRef _bytes) override
     {
@@ -486,9 +397,7 @@ struct PingNode: DiscoveryDatagram
         version = r[0].toInt<unsigned>();
         source.interpretRLP(r[1]);
         destination.interpretRLP(r[2]);
-        expiration = r[3].toInt<uint32_t>();
-        if (r.itemCount() > 4 && r[4].isInt())
-            seq = r[4].toInt<uint64_t>();
+        ts = r[3].toInt<uint32_t>();
     }
 
     std::string typeName() const override { return "Ping"; }
@@ -502,29 +411,24 @@ struct Pong: DiscoveryDatagram
     Pong(NodeIPEndpoint const& _dest): DiscoveryDatagram((bi::udp::endpoint)_dest), destination(_dest) {}
     Pong(bi::udp::endpoint const& _from, NodeID const& _fromid, h256 const& _echo): DiscoveryDatagram(_from, _fromid, _echo) {}
 
-    static constexpr uint8_t type = 2;
+    static const uint8_t type = 2;
     uint8_t packetType() const override { return type; }
 
     NodeIPEndpoint destination;
-    boost::optional<uint64_t> seq;
 
     void streamRLP(RLPStream& _s) const override
     {
-        _s.appendList(seq.is_initialized() ? 4 : 3);
+        _s.appendList(3);
         destination.streamRLP(_s);
         _s << echo;
-        _s << *expiration;
-        if (seq.is_initialized())
-            _s << *seq;
+        _s << ts;
     }
     void interpretRLP(bytesConstRef _bytes) override
     {
         RLP r(_bytes, RLP::AllowNonCanon|RLP::ThrowOnFail);
         destination.interpretRLP(r[0]);
         echo = (h256)r[1];
-        expiration = r[2].toInt<uint32_t>();
-        if (r.itemCount() > 3 && r[3].isInt())
-            seq = r[3].toInt<uint64_t>();
+        ts = r[2].toInt<uint32_t>();
     }
 
     std::string typeName() const override { return "Pong"; }
@@ -532,7 +436,7 @@ struct Pong: DiscoveryDatagram
 
 /**
  * FindNode Packet: Request k-nodes, closest to the target.
- * FindNode is cached and regenerated after timestamp + t, where t is timeout.
+ * FindNode is cached and regenerated after ts + t, where t is timeout.
  * FindNode implicitly results in finding neighbours of a given node.
  *
  * RLP Encoded Items: 2
@@ -547,21 +451,20 @@ struct FindNode: DiscoveryDatagram
     FindNode(bi::udp::endpoint _to, h512 _target): DiscoveryDatagram(_to), target(_target) {}
     FindNode(bi::udp::endpoint const& _from, NodeID const& _fromid, h256 const& _echo): DiscoveryDatagram(_from, _fromid, _echo) {}
 
-    static constexpr uint8_t type = 3;
+    static const uint8_t type = 3;
     uint8_t packetType() const override { return type; }
 
     h512 target;
 
     void streamRLP(RLPStream& _s) const override
     {
-        _s.appendList(2);
-        _s << target << *expiration;
+        _s.appendList(2); _s << target << ts;
     }
     void interpretRLP(bytesConstRef _bytes) override
     {
         RLP r(_bytes, RLP::AllowNonCanon|RLP::ThrowOnFail);
         target = r[0].toHash<h512>();
-        expiration = r[1].toInt<uint32_t>();
+        ts = r[1].toInt<uint32_t>();
     }
 
     std::string typeName() const override { return "FindNode"; }
@@ -576,7 +479,7 @@ struct Neighbours: DiscoveryDatagram
     {
         auto limit = _limit ? std::min(_nearest.size(), (size_t)(_offset + _limit)) : _nearest.size();
         for (auto i = _offset; i < limit; i++)
-            neighbours.push_back(Neighbour(_nearest[i]->node));
+            neighbours.push_back(Neighbour(*_nearest[i]));
     }
     Neighbours(bi::udp::endpoint const& _to): DiscoveryDatagram(_to) {}
     Neighbours(bi::udp::endpoint const& _from, NodeID const& _fromid, h256 const& _echo): DiscoveryDatagram(_from, _fromid, _echo) {}
@@ -590,7 +493,7 @@ struct Neighbours: DiscoveryDatagram
         void streamRLP(RLPStream& _s) const { _s.appendList(4); endpoint.streamRLP(_s, NodeIPEndpoint::StreamInline); _s << node; }
     };
 
-    static constexpr uint8_t type = 4;
+    static const uint8_t type = 4;
     uint8_t packetType() const override { return type; }
 
     std::vector<Neighbour> neighbours;
@@ -601,75 +504,18 @@ struct Neighbours: DiscoveryDatagram
         _s.appendList(neighbours.size());
         for (auto const& n: neighbours)
             n.streamRLP(_s);
-        _s << *expiration;
+        _s << ts;
     }
     void interpretRLP(bytesConstRef _bytes) override
     {
         RLP r(_bytes, RLP::AllowNonCanon|RLP::ThrowOnFail);
         for (auto const& n: r[0])
             neighbours.emplace_back(n);
-        expiration = r[1].toInt<uint32_t>();
+        ts = r[1].toInt<uint32_t>();
     }
 
     std::string typeName() const override { return "Neighbours"; }
 };
 
-struct ENRRequest : DiscoveryDatagram
-{
-    // Constructor for outgoing packets
-    ENRRequest(bi::udp::endpoint const& _to) : DiscoveryDatagram{_to} {}
-    // Constructor for incoming packets
-    ENRRequest(bi::udp::endpoint const& _from, NodeID const& _fromID, h256 const& _echo)
-      : DiscoveryDatagram{_from, _fromID, _echo}
-    {}
-
-    static constexpr uint8_t type = 5;
-    uint8_t packetType() const override { return type; }
-
-    void streamRLP(RLPStream& _s) const override
-    {
-        _s.appendList(1);
-        _s << *expiration;
-    }
-    void interpretRLP(bytesConstRef _bytes) override
-    {
-        RLP r(_bytes, RLP::AllowNonCanon | RLP::ThrowOnFail);
-        expiration = r[0].toInt<uint32_t>();
-    }
-
-    std::string typeName() const override { return "ENRRequest"; }
-};
-
-struct ENRResponse : DiscoveryDatagram
-{
-    // Constructor for outgoing packets
-    ENRResponse(bi::udp::endpoint const& _dest, ENR const& _enr)
-      : DiscoveryDatagram{_dest}, enr{new ENR{_enr}}
-    {}
-    // Constructor for incoming packets
-    ENRResponse(bi::udp::endpoint const& _from, NodeID const& _fromID, h256 const& _echo)
-      : DiscoveryDatagram{_from, _fromID, _echo}
-    {}
-
-    static constexpr uint8_t type = 6;
-    uint8_t packetType() const override { return type; }
-
-    std::unique_ptr<ENR> enr;
-
-    void streamRLP(RLPStream& _s) const override
-    {
-        _s.appendList(2);
-        _s << echo;
-        enr->streamRLP(_s);
-    }
-    void interpretRLP(bytesConstRef _bytes) override
-    {
-        RLP r(_bytes, RLP::AllowNonCanon | RLP::ThrowOnFail);
-        echo = (h256)r[0];
-        enr.reset(new ENR{IdentitySchemeV4::parseENR(r[1])});
-    }
-
-    std::string typeName() const override { return "ENRResponse"; }
-};
 }
 }

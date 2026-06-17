@@ -1,6 +1,23 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+/** @file Client.cpp
+ * @author Gav Wood <i@gavwood.com>
+ * @date 2014
+ */
 
 #include "Client.h"
 #include "Block.h"
@@ -26,10 +43,6 @@ static_assert(BOOST_VERSION >= 106400, "Wrong boost headers version");
 
 namespace
 {
-constexpr unsigned c_syncMinBlockCount = 1;
-constexpr unsigned c_syncMaxBlockCount = 1000;
-constexpr double c_targetDurationS = 1;
-
 std::string filtersToString(h256Hash const& _fs)
 {
     std::stringstream str;
@@ -364,29 +377,18 @@ void Client::appendFromBlock(h256 const& _block, BlockPolarity _polarity, h256Ha
     }
 }
 
+unsigned static const c_syncMin = 1;
+unsigned static const c_syncMax = 1000;
+double static const c_targetDuration = 1;
+
 void Client::syncBlockQueue()
 {
 //  cdebug << "syncBlockQueue()";
 
     ImportRoute ir;
-    h256s badBlockHashes;
     unsigned count;
     Timer t;
-
-    // The verified blocks list needs to be a shared_ptr since we propagate them on the network
-    // thread and import them into our local chain on the client thread.
-    std::shared_ptr<VerifiedBlocks> verifiedBlocks = std::make_shared<VerifiedBlocks>();
-    m_bq.drain(*verifiedBlocks, m_syncAmount);
-
-    // Propagate new blocks to peers before importing them into the chain.
-    auto h = m_host.lock();
-    assert(h);  // capability is owned by Host and should be available for the duration of the
-                // Client's lifetime
-    h->propagateNewBlocks(verifiedBlocks);
-
-    std::tie(ir, badBlockHashes, count) = bc().sync(*verifiedBlocks, m_stateDB);
-    m_syncBlockQueue = m_bq.doneDrain(badBlockHashes);
-
+    tie(ir, m_syncBlockQueue, count) = bc().sync(m_bq, m_stateDB, m_syncAmount);
     double elapsed = t.elapsed();
 
     if (count)
@@ -395,10 +397,10 @@ void Client::syncBlockQueue()
                       << (count / elapsed) << " blocks/s) in #" << bc().number();
     }
 
-    if (elapsed > c_targetDurationS * 1.1 && count > c_syncMinBlockCount)
-        m_syncAmount = max(c_syncMinBlockCount, count * 9 / 10);
-    else if (count == m_syncAmount && elapsed < c_targetDurationS * 0.9 && m_syncAmount < c_syncMaxBlockCount)
-        m_syncAmount = min(c_syncMaxBlockCount, m_syncAmount * 11 / 10 + 1);
+    if (elapsed > c_targetDuration * 1.1 && count > c_syncMin)
+        m_syncAmount = max(c_syncMin, count * 9 / 10);
+    else if (count == m_syncAmount && elapsed < c_targetDuration * 0.9 && m_syncAmount < c_syncMax)
+        m_syncAmount = min(c_syncMax, m_syncAmount * 11 / 10 + 1);
     if (ir.liveBlocks.empty())
         return;
     onChainChanged(ir);
@@ -554,17 +556,11 @@ void Client::onChainChanged(ImportRoute const& _ir)
 //  ctrace << "onChainChanged()";
     h256Hash changeds;
     onDeadBlocks(_ir.deadBlocks, changeds);
-    vector<h256> goodTransactions;
-    goodTransactions.reserve(_ir.goodTransactions.size());
-    for (auto const& t: _ir.goodTransactions)
+    for (auto const& t: _ir.goodTranactions)
     {
         LOG(m_loggerDetail) << "Safely dropping transaction " << t.sha3();
         m_tq.dropGood(t);
-        goodTransactions.push_back(t.sha3());
     }
-    auto h = m_host.lock();
-    if (h)
-        h->removeSentTransactions(goodTransactions);
     onNewBlocks(_ir.liveBlocks, changeds);
     if (!isMajorSyncing())
         resyncStateFromChain();
@@ -759,25 +755,43 @@ void Client::prepareForTransaction()
     startWorking();
 }
 
-Block Client::block(h256 const& _blockHash) const
+Block Client::block(h256 const& _block) const
 {
     try
     {
-        Block ret{bc(), m_stateDB};
-        ret.populateFromChain(bc(), _blockHash);
+        Block ret(bc(), m_stateDB);
+        ret.populateFromChain(bc(), _block);
+        return ret;
+    }
+    catch (Exception& ex)
+    {
+        ex << errinfo_block(bc().block(_block));
+        onBadBlock(ex);
+        return Block(bc());
+    }
+}
+
+Block Client::block(h256 const& _blockHash, PopulationStatistics* o_stats) const
+{
+    try
+    {
+        Block ret(bc(), m_stateDB);
+        PopulationStatistics s = ret.populateFromChain(bc(), _blockHash);
+        if (o_stats)
+            swap(s, *o_stats);
         return ret;
     }
     catch (Exception& ex)
     {
         ex << errinfo_block(bc().block(_blockHash));
         onBadBlock(ex);
-        return Block{bc()};
+        return Block(bc());
     }
 }
 
 void Client::flushTransactions()
 {
-    doWork(false);
+    doWork();
 }
 
 Transactions Client::pending() const
@@ -869,25 +883,11 @@ h256 Client::importTransaction(Transaction const& _t)
 
     // Use the Executive to perform basic validation of the transaction
     // (e.g. transaction signature, account balance) using the state of
-    // the pending block. This can throw but we'll catch the exception at the RPC level.
-    try
-    {
-        Executive e(m_postSeal, bc());
-        e.initialize(_t);
-    }
-    catch (InvalidNonce const& e)
-    {
-        // Too low nonce is invalid for sure
-        bigint const& req = *boost::get_error_info<errinfo_required>(e);
-        bigint const& got = *boost::get_error_info<errinfo_got>(e);
-        if (req > got)
-            throw;
-
-        // Checking against pending block doesn't take into account transactions from the same
-        // sender, that are currently in Transaction Queue.
-        // If nonce is too high, it could be that previous transactions are in TQ.
-        // We'll let TQ deal with nonces, it will order pending transactions by nonce.
-    }
+    // the latest block in the client's blockchain. This can throw but
+    // we'll catch the exception at the RPC level.
+    Block currentBlock = block(bc().currentHash());
+    Executive e(currentBlock, bc());
+    e.initialize(_t);
     ImportResult res = m_tq.import(_t.rlp());
     switch (res)
     {

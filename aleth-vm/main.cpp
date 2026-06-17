@@ -1,5 +1,5 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2015-2019 Aleth Authors.
+// Copyright 2019 Aleth Authors.
 // Licensed under the GNU General Public License, Version 3.
 
 #include <libdevcore/CommonIO.h>
@@ -13,7 +13,6 @@
 #include <libethereum/ChainParams.h>
 #include <libethereum/Executive.h>
 #include <libethereum/LastBlockHashesFace.h>
-#include <libethereum/StandardTrace.h>
 #include <libevm/VMFactory.h>
 
 #include <aleth/buildinfo.h>
@@ -73,7 +72,7 @@ public:
 int main(int argc, char** argv)
 {
     setDefaultOrCLocale();
-    string codeFile;
+    string inputFile;
     Mode mode = Mode::Statistics;
     State state(0);
     Address sender = Address(69);
@@ -82,18 +81,16 @@ int main(int argc, char** argv)
     u256 gas = maxBlockGasLimit();
     u256 gasPrice = 0;
     bool styledJson = true;
-    Json::Value traceJson{Json::arrayValue};
-    StandardTrace st{traceJson};
+    StandardTrace st;
     Network networkName = Network::MainNetworkTest;
     BlockHeader blockHeader;  // fake block to be executed in
     blockHeader.setGasLimit(maxBlockGasLimit());
     blockHeader.setTimestamp(0);
     bytes data;
-    string code;
+    bytes code;
 
     Ethash::init();
     NoProof::init();
-    NoReward::init();
 
     po::options_description transactionOptions("Transaction options", c_lineWidth);
     string const gasLimitDescription =
@@ -113,12 +110,10 @@ int main(int argc, char** argv)
     addTransactionOption("input", po::value<string>(), "<d> Transaction code should be <d>");
     addTransactionOption("code", po::value<string>(),
         "<d> Contract code <d>. Makes transaction a call to this contract");
-    addTransactionOption("codefile", po::value<string>(),
-        "<path> File containing contract code. If '-' is specified, code is read from stdin");
 
     po::options_description networkOptions("Network options", c_lineWidth);
     networkOptions.add_options()("network", po::value<string>(),
-        "Main|Ropsten|Homestead|Frontier|Byzantium|Constantinople|ConstantinopleFix|Istanbul\n");
+        "Main|Ropsten|Homestead|Frontier|Byzantium|Constantinople|ConstantinopleFix\n");
 
     po::options_description optionsForTrace("Options for trace", c_lineWidth);
     auto addTraceOption = optionsForTrace.add_options();
@@ -147,7 +142,8 @@ int main(int argc, char** argv)
             ->notifier([&](int64_t _t) { blockHeader.setTimestamp(_t); }),
         "<n> Set timestamp");
 
-    po::options_description allowedOptions("Usage ethvm <options> [trace|stats|output|test]");
+    po::options_description allowedOptions(
+        "Usage ethvm <options> [trace|stats|output|test] (<file>|-)");
     allowedOptions.add(vmProgramOptions(c_lineWidth))
         .add(networkOptions)
         .add(optionsForTrace)
@@ -175,6 +171,8 @@ int main(int argc, char** argv)
             mode = Mode::Trace;
         else if (arg == "test")
             mode = Mode::Test;
+        else if (inputFile.empty())
+            inputFile = arg;  // Assign input file name only once.
         else
         {
             cerr << "Unknown argument: " << arg << '\n';
@@ -213,11 +211,9 @@ int main(int argc, char** argv)
     if (vm.count("network"))
     {
         string network = vm["network"].as<string>();
-        if (network == "Istanbul")
-            networkName = Network::IstanbulTest;
-        else if (network == "ConstantinopleFix")
+        if (network == "ConstantinopleFix")
             networkName = Network::ConstantinopleFixTest;
-        else if (network == "Constantinople")
+        if (network == "Constantinople")
             networkName = Network::ConstantinopleTest;
         else if (network == "Byzantium")
             networkName = Network::ByzantiumTest;
@@ -238,29 +234,30 @@ int main(int argc, char** argv)
     if (vm.count("input"))
         data = fromHex(vm["input"].as<string>());
     if (vm.count("code"))
-        code = vm["code"].as<string>();
-    if (vm.count("codefile"))
-        codeFile = vm["codefile"].as<string>();
+        code = fromHex(vm["code"].as<string>());
 
     // Read code from input file.
-    if (!codeFile.empty())
+    if (!inputFile.empty())
     {
         if (!code.empty())
-        {
-            cerr << "Options --code and --codefile shouldn't be used at the same time" << '\n';
-            return AlethErrors::ArgumentProcessingFailure;
-        }
+            cerr << "--code argument overwritten by input file " << inputFile << '\n';
 
-        if (codeFile == "-")
-            std::getline(std::cin, code);
+        if (inputFile == "-")
+            for (int i = cin.get(); i != -1; i = cin.get())
+                code.push_back(static_cast<byte>(i));
         else
-            code = contentsString(codeFile);
-        code.erase(code.find_last_not_of(" \t\n\r") + 1);  // Right trim.
-    }
+            code = contents(inputFile);
 
-    unique_ptr<SealEngineFace> se(ChainParams(genesisInfo(networkName)).createSealEngine());
-    LastBlockHashes lastBlockHashes;
-    EnvInfo const envInfo(blockHeader, lastBlockHashes, 0 /* gasUsed */, se->chainParams().chainID);
+        try  // Try decoding from hex.
+        {
+            std::string strCode{reinterpret_cast<char const*>(code.data()), code.size()};
+            strCode.erase(strCode.find_last_not_of(" \t\n\r") + 1);  // Right trim.
+            code = fromHex(strCode, WhenError::Throw);
+        }
+        catch (BadHexCharacter const&)
+        {
+        }  // Ignore decoding errors.
+    }
 
     Transaction t;
     Address contractDestination("1122334455667788991011121314151617181920");
@@ -268,20 +265,7 @@ int main(int argc, char** argv)
     {
         // Deploy the code on some fake account to be called later.
         Account account(0, 0);
-        auto const latestVersion = se->evmSchedule(envInfo.number()).accountVersion;
-
-        bytes codeBytes;
-        try
-        {
-            codeBytes = fromHex(code, WhenError::Throw);
-        }
-        catch (BadHexCharacter const&)
-        {
-            cerr << "Provided code contains invalid characters.\n";
-            return AlethErrors::ArgumentProcessingFailure;
-        }
-
-        account.setCode(bytes{codeBytes}, latestVersion);
+        account.setCode(bytes{code});
         std::unordered_map<Address, Account> map;
         map[contractDestination] = account;
         state.populateFrom(map);
@@ -294,6 +278,9 @@ int main(int argc, char** argv)
 
     state.addBalance(sender, value);
 
+    unique_ptr<SealEngineFace> se(ChainParams(genesisInfo(networkName)).createSealEngine());
+    LastBlockHashes lastBlockHashes;
+    EnvInfo const envInfo(blockHeader, lastBlockHashes, 0);
     Executive executive(state, envInfo, *se);
     ExecutionResult res;
     executive.setResultRecipient(res);
@@ -360,16 +347,7 @@ int main(int argc, char** argv)
         }
     }
     else if (mode == Mode::Trace)
-    {
-        if (styledJson)
-            cout << Json::StyledWriter().write(traceJson);
-        else
-        {
-            Json::FastWriter writer;
-            for (auto const& traceOp : traceJson)
-                cout << writer.write(traceOp);
-        }
-    }
+        cout << (styledJson ? st.styledJson() : st.multilineTrace());
     else if (mode == Mode::OutputOnly)
         cout << toHex(output) << '\n';
     else if (mode == Mode::Test)

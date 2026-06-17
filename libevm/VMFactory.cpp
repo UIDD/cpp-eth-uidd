@@ -1,6 +1,19 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #include "VMFactory.h"
 #include "EVMC.h"
@@ -30,9 +43,6 @@ auto g_kind = VMKind::Legacy;
 #ifndef UIDD_BUILD
 std::unique_ptr<EVMC> g_evmcDll;
 #endif
-
-/// The list of EVMC options stored as pairs of (name, value).
-std::vector<std::pair<std::string, std::string>> s_evmcOptions;
 
 /// A helper type to build the tabled of VM implementations.
 ///
@@ -73,8 +83,8 @@ void setVMKind(const std::string& _name)
     g_evmcDll.reset();
 
     evmc_loader_error_code ec;
-    evmc_vm* vm = evmc_load_and_create(_name.c_str(), &ec);
-    assert(ec == EVMC_LOADER_SUCCESS || vm == nullptr);
+    evmc_instance *instance = evmc_load_and_create(_name.c_str(), &ec);
+    assert(ec == EVMC_LOADER_SUCCESS || instance == nullptr);
 
     switch (ec)
     {
@@ -95,7 +105,7 @@ void setVMKind(const std::string& _name)
                 "loading " + _name + " failed"));
     }
 
-    g_evmcDll.reset(new EVMC{vm, s_evmcOptions});
+    g_evmcDll.reset(new EVMC{instance});
 
     cnote << "Loaded EVMC module: " << g_evmcDll->name() << " " << g_evmcDll->version() << " ("
           << _name << ")";
@@ -110,6 +120,9 @@ namespace
 /// The name of the program option --evmc. The boost will trim the tailing
 /// space and we can reuse this variable in exception message.
 const char c_evmcPrefix[] = "evmc ";
+
+/// The list of EVMC options stored as pairs of (name, value).
+std::vector<std::pair<std::string, std::string>> s_evmcOptions;
 
 /// The additional parser for EVMC options. The options should look like
 /// `--evmc name=value` or `--evmc=name=value`. The boost pass the strings
@@ -128,6 +141,11 @@ void parseEvmcOptions(const std::vector<std::string>& _opts)
     }
 }
 }  // namespace
+
+std::vector<std::pair<std::string, std::string>>& evmcOptions() noexcept
+{
+    return s_evmcOptions;
+};
 
 po::options_description vmProgramOptions(unsigned _lineLength)
 {
@@ -180,7 +198,7 @@ VMPtr VMFactory::create(VMKind _kind)
     switch (_kind)
     {
     case VMKind::Interpreter:
-        return {new EVMC{evmc_create_aleth_interpreter(), s_evmcOptions}, default_delete};
+        return {new EVMC{evmc_create_interpreter()}, default_delete};
 #ifndef UIDD_BUILD
     case VMKind::DLL:
         assert(g_evmcDll != nullptr);

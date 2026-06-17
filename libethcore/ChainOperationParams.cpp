@@ -1,21 +1,44 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
 
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+/** @file ChainOperationParams.cpp
+ * @author Gav Wood <i@gavwood.com>
+ * @date 2015
+ */
 
 #include "ChainOperationParams.h"
-#include <libdevcore/CommonData.h>
 #include <libdevcore/Log.h>
-
+#include <libdevcore/CommonData.h>
 using namespace std;
 using namespace dev;
 using namespace eth;
 
 PrecompiledContract::PrecompiledContract(
-    std::string const& _name, u256 const& _startingBlock /*= 0*/)
-  : m_cost(PrecompiledRegistrar::pricer(_name)),
-    m_execute(PrecompiledRegistrar::executor(_name)),
-    m_startingBlock(_startingBlock)
+    unsigned _base,
+    unsigned _word,
+    PrecompiledExecutor const& _exec,
+    u256 const& _startingBlock
+):
+    PrecompiledContract([=](bytesConstRef _in) -> bigint
+    {
+        bigint s = _in.size();
+        bigint b = _base;
+        bigint w = _word;
+        return b + (s + 31) / 32 * w;
+    }, _exec, _startingBlock)
 {}
 
 ChainOperationParams::ChainOperationParams():
@@ -32,22 +55,8 @@ ChainOperationParams::ChainOperationParams():
 
 EVMSchedule const& ChainOperationParams::scheduleForBlockNumber(u256 const& _blockNumber) const
 {
-    if (_blockNumber >= lastForkBlock)
-        return lastForkWithAdditionalEIPsSchedule;
-    else
-        return forkScheduleForBlockNumber(_blockNumber);
-}
-
-EVMSchedule const& ChainOperationParams::forkScheduleForBlockNumber(u256 const& _blockNumber) const
-{
     if (_blockNumber >= experimentalForkBlock)
         return ExperimentalSchedule;
-    else if (_blockNumber >= berlinForkBlock)
-        return BerlinSchedule;
-    else if (_blockNumber >= muirGlacierForkBlock)
-        return MuirGlacierSchedule;
-    else if (_blockNumber >= istanbulForkBlock)
-        return IstanbulSchedule;
     else if (_blockNumber >= constantinopleFixForkBlock)
         return ConstantinopleFixSchedule;
     else if (_blockNumber >= constantinopleForkBlock)

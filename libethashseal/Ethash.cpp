@@ -1,6 +1,20 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 #include "Ethash.h"
 #include "EthashCPUMiner.h"
 
@@ -117,9 +131,12 @@ void Ethash::verifyTransaction(ImportRequirements::value _ir, TransactionBase co
     if (_ir & ImportRequirements::TransactionSignatures)
     {
         if (_header.number() >= chainParams().EIP158ForkBlock)
-            _t.checkChainId(chainParams().chainID);
-        else if (_t.isReplayProtected())
-            BOOST_THROW_EXCEPTION(InvalidSignature());
+        {
+            int chainID = chainParams().chainID;
+            _t.checkChainId(chainID);
+        }
+        else
+            _t.checkChainId(-4);
     }
 }
 

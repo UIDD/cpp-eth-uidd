@@ -1,9 +1,10 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2019 Aleth Authors.
+// Copyright 2018 Aleth Authors.
 // Licensed under the GNU General Public License, Version 3.
+/**
+ * Validation scheme unit tests.
+ */
 
-/// @file
-/// Validation scheme unit tests.
 #include <gtest/gtest.h>
 #include <libdevcore/Exceptions.h>
 #include <libethereum/ValidationSchemes.h>

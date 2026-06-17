@@ -1,6 +1,25 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2015-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+ This file is part of cpp-ethereum.
+ 
+ cpp-ethereum is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ 
+ cpp-ethereum is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ 
+ You should have received a copy of the GNU General Public License
+ along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+ */
+/** @file RLPXHandshake.h
+ * @author Alex Leverington <nessence@gmail.com>
+ * @date 2015
+ */
+
+
 #pragma once
 
 #include <memory>
@@ -15,6 +34,8 @@ namespace dev
 {
 namespace p2p
 {
+
+static const unsigned c_rlpxVersion = 4;
 
 /**
  * @brief Setup inbound or outbound connection for communication over RLPXFrameCoder.
@@ -32,10 +53,10 @@ class RLPXHandshake: public std::enable_shared_from_this<RLPXHandshake>
 
 public:
     /// Setup incoming connection.
-    RLPXHandshake(Host* _host, std::shared_ptr<RLPXSocket> const& _socket);
-
+    RLPXHandshake(Host* _host, std::shared_ptr<RLPXSocket> const& _socket): m_host(_host), m_originated(false), m_socket(_socket), m_idleTimer(m_socket->ref().get_io_service()) { crypto::Nonce::get().ref().copyTo(m_nonce.ref()); }
+    
     /// Setup outbound connection.
-    RLPXHandshake(Host* _host, std::shared_ptr<RLPXSocket> const& _socket, NodeID _remote);
+    RLPXHandshake(Host* _host, std::shared_ptr<RLPXSocket> const& _socket, NodeID _remote): m_host(_host), m_remote(_remote), m_originated(true), m_socket(_socket), m_idleTimer(m_socket->ref().get_io_service()) { crypto::Nonce::get().ref().copyTo(m_nonce.ref()); }
 
     virtual ~RLPXHandshake() = default;
 
@@ -45,13 +66,7 @@ public:
     /// Aborts the handshake.
     void cancel();
 
-    NodeID remote() const { return m_remote; }
-
 protected:
-    /// Timeout for a stage in the handshake to complete (the remote to respond to transition
-    /// events). Enforced by m_idleTimer and refreshed by transition().
-    static constexpr std::chrono::milliseconds c_timeout{1800};
-
     /// Sequential states of handshake
     enum State
     {
@@ -89,19 +104,13 @@ protected:
     void readAckEIP8();
     
     /// Closes connection and ends transitions.
-    void error(boost::system::error_code _ech = {});
-
+    void error();
+    
     /// Performs transition for m_nextState.
-    virtual void transition(boost::system::error_code _ech = {});
+    virtual void transition(boost::system::error_code _ech = boost::system::error_code());
 
-    /// Get a string indicating if the connection is incoming or outgoing
-    inline char const* connectionDirectionString() const
-    {
-        return m_originated ? "egress" : "ingress";
-    }
-
-    /// Determine if the remote socket is still connected
-    bool remoteSocketConnected() const;
+    /// Timeout for remote to respond to transition events. Enforced by m_idleTimer and refreshed by transition().
+    boost::posix_time::milliseconds const c_timeout = boost::posix_time::milliseconds(1800);
 
     State m_nextState = New;		///< Current or expected state of transition.
     bool m_cancel = false;			///< Will be set to true if connection was canceled.
@@ -130,16 +139,11 @@ protected:
     /// Used to read and write RLPx encrypted frames for last step of handshake authentication.
     /// Passed onto Host which will take ownership.
     std::unique_ptr<RLPXFrameCoder> m_io;
+    
+    std::shared_ptr<RLPXSocket> m_socket;		///< Socket.
+    boost::asio::deadline_timer m_idleTimer;	///< Timer which enforces c_timeout.
 
-    std::shared_ptr<RLPXSocket> m_socket;
-
-    /// Timer which enforces c_timeout. Reset for each stage of the handshake.
-    ba::steady_timer m_idleTimer;
-
-    HandshakeFailureReason m_failureReason;
-
-    Logger m_logger{createLogger(VerbosityTrace, "rlpx")};
-    Logger m_errorLogger{createLogger(VerbosityError, "rlpx")};
+    Logger m_logger{createLogger(VerbosityTrace, "net")};
 };
     
 }

@@ -13,9 +13,9 @@ RUN apk add --no-cache \
         cmake \
         make \
         git
-COPY . /source
+ADD . /source
 WORKDIR /build
-RUN cmake /source -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DHUNTER_JOBS_NUMBER=$(nproc)
+RUN cmake /source -DVMTRACE=ON -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DHUNTER_JOBS_NUMBER=$(nproc)
 RUN make -j $(nproc) && make install
 
 # Target: testeth
@@ -23,9 +23,7 @@ RUN make -j $(nproc) && make install
 #     docker build --target testeth -f scripts/docker/aleth.dockerfile .
 
 FROM alpine:latest AS testeth
-RUN adduser -D testeth
 RUN apk add --no-cache libstdc++
-USER testeth
 COPY --from=builder /build/test/testeth /usr/bin/
 ENTRYPOINT ["/usr/bin/testeth"]
 
@@ -34,9 +32,7 @@ ENTRYPOINT ["/usr/bin/testeth"]
 
 FROM alpine:latest AS aleth
 RUN apk add --no-cache python3 libstdc++
-RUN adduser -D aleth
-COPY --from=builder /usr/bin/aleth* /source/scripts/aleth.py /source/scripts/dopple.py /usr/bin/
+COPY --from=builder /usr/bin/aleth /source/scripts/aleth.py /source/scripts/dopple.py /usr/bin/
 COPY --from=builder /usr/share/aleth/ /usr/share/aleth/
-USER aleth
 EXPOSE 8545
 ENTRYPOINT ["/usr/bin/aleth.py"]

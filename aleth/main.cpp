@@ -1,5 +1,5 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2015-2019 Aleth Authors.
+// Copyright 2019 Aleth Authors.
 // Licensed under the GNU General Public License, Version 3.
 
 #include <thread>
@@ -110,12 +110,11 @@ int main(int argc, char** argv)
     setDefaultOrCLocale();
 
     // Init secp256k1 context by calling one of the functions.
-    toPublic(Secret{});
+    toPublic({});
 
     // Init defaults
     Ethash::init();
     NoProof::init();
-    NoReward::init();
 
     /// Operating mode.
     OperationMode mode = OperationMode::Node;
@@ -133,6 +132,7 @@ int main(int argc, char** argv)
 
     string jsonAdmin;
     ChainParams chainParams;
+    string privateChain;
 
     bool upnp = true;
     WithExisting withExisting = WithExisting::Trust;
@@ -149,6 +149,7 @@ int main(int argc, char** argv)
     std::map<p2p::NodeID, pair<NodeIPEndpoint, bool>> preferredNodes;
     bool bootstrap = true;
     bool disableDiscovery = false;
+    bool enableDiscovery = false;
     bool allowLocalDiscovery = false;
     static const unsigned NoNetworkID = (unsigned)-1;
     unsigned networkID = NoNetworkID;
@@ -207,6 +208,7 @@ int main(int argc, char** argv)
     auto addClientOption = clientDefaultMode.add_options();
     addClientOption("mainnet", "Use the main network protocol");
     addClientOption("ropsten", "Use the Ropsten testnet");
+    addClientOption("private", po::value<string>()->value_name("<name>"), "Use a private chain");
     addClientOption("test", "Testing mode; disable PoW and provide test rpc interface");
     addClientOption("config", po::value<string>()->value_name("<file>"),
         "Configure specialised blockchain using given JSON information\n");
@@ -217,10 +219,8 @@ int main(int argc, char** argv)
     addClientOption("admin", po::value<string>()->value_name("<password>"),
         "Specify admin session key for JSON-RPC (default: auto-generated and printed at "
         "start-up)");
-    addClientOption("kill,K", "Kill the blockchain first. This will remove all blocks and state.");
-    addClientOption("rebuild,R",
-        "Rebuild the blockchain from the existing database. This involves reimporting all blocks "
-        "and will probably take a while.");
+    addClientOption("kill,K", "Kill the blockchain first");
+    addClientOption("rebuild,R", "Rebuild the blockchain from the existing database");
     addClientOption("rescue", "Attempt to rescue a corrupt database\n");
     addClientOption("import-presale", po::value<string>()->value_name("<file>"),
         "Import a pre-sale key; you'll need to specify the password to this key");
@@ -324,17 +324,9 @@ int main(int argc, char** argv)
     addImportExportOption("import-snapshot", po::value<string>()->value_name("<path>"),
         "Import blockchain and state data from the Parity Warp Sync snapshot\n");
 
-    std::string const logChannels =
-        "block blockhdr bq chain client debug discov error ethcap exec host impolite info net "
-        "overlaydb p2pcap peer rlpx rpc snap statedb sync timer tq trace vmtrace warn warpcap watch";
     LoggingOptions loggingOptions;
     po::options_description loggingProgramOptions(
-        createLoggingProgramOptions(c_lineWidth, loggingOptions, logChannels));
-    // log-vmtrace is needed only in aleth
-    auto addLoggingOption = loggingProgramOptions.add_options();
-    addLoggingOption("log-vmtrace", po::bool_switch(&loggingOptions.vmTrace),
-        "Enable VM trace log (requires log-verbosity 4).\n");
-
+        createLoggingProgramOptions(c_lineWidth, loggingOptions));
 
     po::options_description generalOptions("GENERAL OPTIONS", c_lineWidth);
     auto addGeneralOption = generalOptions.add_options();
@@ -388,6 +380,7 @@ int main(int argc, char** argv)
     if (vm.count("test"))
     {
         testingMode = true;
+        enableDiscovery = false;
         disableDiscovery = true;
         bootstrap = false;
     }
@@ -630,6 +623,16 @@ int main(int argc, char** argv)
             cerr << "Bad " << "--network-id" << " option: " << vm["network-id"].as<string>() << "\n";
             return AlethErrors::BadNetworkIdOption;
         }
+    if (vm.count("private"))
+        try
+        {
+            privateChain = vm["private"].as<string>();
+        }
+        catch (...)
+        {
+            cerr << "Bad " << "--private" << " option: " << vm["private"].as<string>() << "\n";
+            return AlethErrors::BadPrivateOption;
+        }
     if (vm.count("kill"))
         withExisting = WithExisting::Kill;
     if (vm.count("rebuild"))
@@ -679,20 +682,25 @@ int main(int argc, char** argv)
     {
         try
         {
-            chainParams = ChainParams{configJSON, {}, configPath};
+            chainParams = chainParams.loadConfig(configJSON, {}, configPath);
             chainConfigIsSet = true;
         }
         catch (...)
         {
-            cerr << "provided configuration is not well-formatted\n";
-            cerr << "well-formatted sample: \n"
-                 << genesisInfo(eth::Network::MainNetworkTest) << "\n";
-            return AlethErrors::ConfigFileInvalid;
+            cerr << "provided configuration is not well formatted\n";
+            cerr << "sample: \n" << genesisInfo(eth::Network::MainNetworkTest) << "\n";
+            return AlethErrors::Success;
         }
     }
 
     setupLogging(loggingOptions);
 
+    if (!privateChain.empty())
+    {
+        chainParams.extraData = sha3(privateChain).asBytes();
+        chainParams.difficulty = chainParams.minimumDifficulty;
+        chainParams.gasLimit = u256(1) << 32;
+    }
 
     if (!chainConfigIsSet)
         // default to mainnet if not already set with any of `--mainnet`, `--ropsten`, `--genesis`, `--config`
@@ -747,7 +755,7 @@ int main(int argc, char** argv)
     };
 
     auto netPrefs = publicIP.empty() ? NetworkConfig(listenIP, listenPort, upnp) : NetworkConfig(publicIP, listenIP ,listenPort, upnp);
-    netPrefs.discovery = !disableDiscovery;
+    netPrefs.discovery = (privateChain.empty() && !disableDiscovery) || enableDiscovery;
     netPrefs.allowLocalDiscovery = allowLocalDiscovery;
     netPrefs.pin = vm.count("pin") != 0;
 
@@ -932,7 +940,7 @@ int main(int argc, char** argv)
     if (author)
         cout << "Mining Beneficiary: " << renderFullAddress(author) << "\n";
 
-    if (bootstrap || !remoteHost.empty() || !disableDiscovery || listenSet || !preferredNodes.empty())
+    if (bootstrap || !remoteHost.empty() || enableDiscovery || listenSet || !preferredNodes.empty())
     {
         web3.startNetwork();
         cout << "Node ID: " << web3.enode() << "\n";
@@ -1017,9 +1025,9 @@ int main(int argc, char** argv)
             else
                 web3.addNode(p.first, p.second.first);
 
-        if (bootstrap)
-            for (auto const& i : defaultBootNodes())
-                web3.addNode(i.first, i.second);
+        if (bootstrap && privateChain.empty())
+            for (auto const& i : Host::pocHosts())
+                web3.requirePeer(i.first, i.second);
         if (!remoteHost.empty())
             web3.addNode(p2p::NodeID(), remoteHost + ":" + toString(remotePort));
     }

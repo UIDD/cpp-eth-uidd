@@ -1,5 +1,5 @@
 // Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
+// Copyright 2018 Aleth Authors.
 // Licensed under the GNU General Public License, Version 3.
 
 #include "Host.h"
@@ -27,16 +27,10 @@ using namespace dev::p2p;
 namespace
 {
 /// Interval at which Host::run will call keepAlivePeers to ping peers.
-constexpr chrono::seconds c_keepAliveInterval{30};
+constexpr chrono::seconds c_keepAliveInterval = chrono::seconds(30);
 
 /// Disconnect timeout after failure to respond to keepAlivePeers ping.
-constexpr chrono::seconds c_keepAliveTimeOut{1};
-
-/// Interval which m_runTimer is run when network is connected.
-constexpr chrono::milliseconds c_runTimerInterval{100};
-
-/// Interval at which active peer info is logged
-constexpr chrono::seconds c_logActivePeersInterval{30};
+constexpr chrono::milliseconds c_keepAliveTimeOut = chrono::milliseconds(1000);
 }  // namespace
 
 HostNodeTableHandler::HostNodeTableHandler(Host& _host): m_host(_host) {}
@@ -85,28 +79,24 @@ bytes ReputationManager::data(SessionFace const& _s, string const& _sub) const
     return bytes();
 }
 
-Host::Host(
-    string const& _clientVersion, pair<Secret, ENR> const& _secretAndENR, NetworkConfig const& _n)
+Host::Host(string const& _clientVersion, KeyPair const& _alias, NetworkConfig const& _n)
   : Worker("p2p", 0),
     m_clientVersion(_clientVersion),
     m_netConfig(_n),
     m_ifAddresses(Network::getInterfaceAddresses()),
-    m_ioContext(2),  // concurrency hint, suggests how many threads it should allow to run
+    m_ioService(2),  // concurrency hint, suggests how many threads it should allow to run
                      // simultaneously
-    m_tcp4Acceptor(m_ioContext),
-    m_runTimer(m_ioContext),
-    m_alias{_secretAndENR.first},
-    m_restoredENR{_secretAndENR.second},
+    m_tcp4Acceptor(m_ioService),
+    m_timer(m_ioService),
+    m_alias(_alias),
     m_lastPing(chrono::steady_clock::time_point::min()),
-    m_capabilityHost(createCapabilityHost(*this)),
-    m_lastPeerLogMessage(chrono::steady_clock::time_point::min())
+    m_capabilityHost(createCapabilityHost(*this))
 {
-    LOG(m_infoLogger) << "Id: " << id();
-    LOG(m_infoLogger) << "ENR: " << m_restoredENR;
+    cnetnote << "Id: " << id();
 }
 
-Host::Host(string const& _clientVersion, NetworkConfig const& _n, bytesConstRef _restoreNetwork)
-  : Host(_clientVersion, restoreENR(_restoreNetwork, _n), _n)
+Host::Host(string const& _clientVersion, NetworkConfig const& _n, bytesConstRef _restoreNetwork):
+    Host(_clientVersion, networkAlias(_restoreNetwork), _n)
 {
     m_restoreNetwork = _restoreNetwork.toBytes();
 }
@@ -137,7 +127,7 @@ void Host::start()
 
 void Host::stop()
 {
-    // called to force io_context to kill any remaining tasks it might have -
+    // called to force io_service to kill any remaining tasks it might have -
     // such tasks may involve socket reads from Capabilities that maintain references
     // to resources we're about to free.
 
@@ -148,7 +138,7 @@ void Host::stop()
 
     // stopping io service allows running manual network operations for shutdown
     // and also stops blocking worker thread, allowing worker thread to exit
-    m_ioContext.stop();
+    m_ioService.stop();
 
     // Close the node table socket and cancel deadline timers. This effectively stops
     // discovery, even during subsequent io service polling
@@ -159,50 +149,6 @@ void Host::stop()
         stopWorking();
 }
 
-void Host::startCapabilities()
-{
-    for (auto const& itCap : m_capabilities)
-    {
-        scheduleCapabilityWorkLoop(*itCap.second.capability, itCap.second.backgroundWorkTimer);
-    }
-}
-
-void Host::scheduleCapabilityWorkLoop(CapabilityFace& _cap, shared_ptr<ba::steady_timer> _timer)
-{
-    _timer->expires_after(_cap.backgroundWorkInterval());
-    _timer->async_wait([this, _timer, &_cap](boost::system::error_code _ec) {
-        if (_timer->expiry() == c_steadyClockMin || _ec == boost::asio::error::operation_aborted)
-        {
-            LOG(m_logger) << "Timer was probably cancelled for capability: " << _cap.descriptor();
-            return;
-        }
-        else if (_ec)
-        {
-            LOG(m_logger) << "Timer error detected for capability: " << _cap.descriptor();
-            return;
-        }
-
-        _cap.doBackgroundWork();
-        scheduleCapabilityWorkLoop(_cap, move(_timer));
-    });
-}
-
-void Host::stopCapabilities()
-{
-    for (auto const& itCap : m_capabilities)
-    {
-        auto timer = itCap.second.backgroundWorkTimer;
-        post(m_ioContext, [timer] { timer->expires_at(c_steadyClockMin); });
-    }
-}
-
-std::shared_ptr<Peer> Host::peer(NodeID const& _n) const
-{
-    RecursiveGuard l(x_sessions);
-    auto it = m_peers.find(_n);
-    return it != m_peers.end() ? it->second : nullptr;
-}
-
 void Host::doneWorking()
 {
     // Return early if we have no capabilities since there's nothing to do. We've already stopped
@@ -210,9 +156,12 @@ void Host::doneWorking()
     if (!haveCapabilities())
         return;
 
-    // reset io_context (allows manually polling network, below)
-    m_ioContext.restart();
+    // reset ioservice (cancels all timers and allows manually polling network, below)
+    m_ioService.reset();
 
+    DEV_GUARDED(x_timers)
+        m_timers.clear();
+    
     // shutdown acceptor
     m_tcp4Acceptor.cancel();
     if (m_tcp4Acceptor.is_open())
@@ -223,11 +172,11 @@ void Host::doneWorking()
     // This helps ensure a peer isn't stopped at the same time it's starting
     // and that socket for pending connection is closed.
     while (m_accepting)
-        m_ioContext.poll();
+        m_ioService.poll();
 
-    // (eth: stops syncing or block / tx broadcast). Capabilities will be cancelled when io_context
-    // is polled on pending handshake / peer disconnect
-    stopCapabilities();
+    // stop capabilities (eth: stops syncing or block/tx broadcast)
+    for (auto const& h: m_capabilities)
+        h.second->onStopping();
 
     // disconnect pending handshake, before peers, as a handshake may create a peer
     for (unsigned n = 0;; n = 0)
@@ -241,7 +190,7 @@ void Host::doneWorking()
                 }
         if (!n)
             break;
-        m_ioContext.poll();
+        m_ioService.poll();
     }
     
     // disconnect peers
@@ -259,7 +208,7 @@ void Host::doneWorking()
             break;
 
         // poll so that peers send out disconnect packets
-        m_ioContext.poll();
+        m_ioService.poll();
     }
 
     // finally, clear out peers (in case they're lingering)
@@ -267,10 +216,8 @@ void Host::doneWorking()
     m_sessions.clear();
 }
 
-// Starts a new peer session after a successful handshake - agree on mutually-supported capablities,
-// start each mutually-supported capability, and send a ping to the node.
-void Host::startPeerSession(Public const& _id, RLP const& _hello,
-    unique_ptr<RLPXFrameCoder>&& _io, shared_ptr<RLPXSocket> const& _s)
+// called after successful handshake
+void Host::startPeerSession(Public const& _id, RLP const& _rlp, unique_ptr<RLPXFrameCoder>&& _io, shared_ptr<RLPXSocket> const& _s)
 {
     // session maybe ingress or egress so m_peers and node table entries may not exist
     shared_ptr<Peer> peer;
@@ -278,10 +225,7 @@ void Host::startPeerSession(Public const& _id, RLP const& _hello,
     {
         auto itPeer = m_peers.find(_id);
         if (itPeer != m_peers.end())
-        {
             peer = itPeer->second;
-            peer->m_lastHandshakeFailure = HandshakeFailureReason::NoFailure;
-        }
         else
         {
             // peer doesn't exist, try to get port info from node table
@@ -298,11 +242,11 @@ void Host::startPeerSession(Public const& _id, RLP const& _hello,
         peer->m_lastConnected = chrono::system_clock::now();
     peer->endpoint.setAddress(_s->remoteEndpoint().address());
 
-    auto const protocolVersion = _hello[0].toInt<unsigned>();
-    auto const clientVersion = _hello[1].toString();
-    auto caps = _hello[2].toVector<CapDesc>();
-    auto const listenPort = _hello[3].toInt<unsigned short>();
-    auto const pub = _hello[4].toHash<Public>();
+    auto protocolVersion = _rlp[0].toInt<unsigned>();
+    auto clientVersion = _rlp[1].toString();
+    auto caps = _rlp[2].toVector<CapDesc>();
+    auto listenPort = _rlp[3].toInt<unsigned short>();
+    auto pub = _rlp[4].toHash<Public>();
 
     if (pub != _id)
     {
@@ -320,15 +264,13 @@ void Host::startPeerSession(Public const& _id, RLP const& _hello,
     for (auto cap: caps)
         capslog << "(" << cap.first << "," << dec << cap.second << ")";
 
-    cnetlog << "Starting peer session with " << clientVersion << " (protocol: V" << protocolVersion
-            << ") " << _id << " " << showbase << "capabilities: " << capslog.str() << " " << dec
-            << "port: " << listenPort;
+    cnetlog << "Hello: " << clientVersion << " V[" << protocolVersion << "]"
+            << " " << _id << " " << showbase << capslog.str() << " " << dec << listenPort;
 
     // create session so disconnects are managed
     shared_ptr<SessionFace> session = make_shared<Session>(this, move(_io), _s, peer,
         PeerSessionInfo({_id, clientVersion, peer->endpoint.address().to_string(), listenPort,
-            chrono::steady_clock::duration(), _hello[2].toSet<CapDesc>(),
-            map<string, string>()}));
+            chrono::steady_clock::duration(), _rlp[2].toSet<CapDesc>(), map<string, string>()}));
     if (protocolVersion < dev::p2p::c_protocolVersion - 1)
     {
         session->disconnect(IncompatibleProtocol);
@@ -378,11 +320,10 @@ void Host::startPeerSession(Public const& _id, RLP const& _hello,
             if (itCap == m_capabilities.end())
                 return session->disconnect(IncompatibleProtocol);
 
-            auto capability = itCap->second.capability;
+            auto capability = itCap->second;
             session->registerCapability(capDesc, offset, capability);
 
-            cnetlog << "New session for capability " << capDesc.first << "; idOffset: " << offset
-                    << " with " << _id << "@" << _s->remoteEndpoint();
+            cnetlog << "New session for capability " << capDesc.first << "; idOffset: " << offset;
 
             capability->onConnect(_id, capDesc.second);
 
@@ -391,30 +332,8 @@ void Host::startPeerSession(Public const& _id, RLP const& _hello,
 
         session->start();
     }
-
-    LOG(m_logger) << "Peer connection successfully established with " << _id << "@"
-                  << _s->remoteEndpoint();
-}
-
-/// Get session by id
-shared_ptr<SessionFace> Host::peerSession(NodeID const& _id) const
-{
-    RecursiveGuard l(x_sessions);
-    auto const it = m_sessions.find(_id);
-    if (it != m_sessions.end())
-    {
-        auto const s = it->second.lock();
-        if (s && s->isConnected())
-            return s;
-    }
-    return {};
-}
-
-void Host::onHandshakeFailed(NodeID const& _n, HandshakeFailureReason _r)
-{
-    std::shared_ptr<Peer> p = peer(_n);
-    if (p)
-        p->m_lastHandshakeFailure = _r;
+    
+    LOG(m_logger) << "p2p.host.peer.register " << _id;
 }
 
 void Host::onNodeTableEvent(NodeID const& _n, NodeTableEventType const& _e)
@@ -452,30 +371,14 @@ void Host::onNodeTableEvent(NodeID const& _n, NodeTableEventType const& _e)
     }
 }
 
-bool Host::isHandshaking(NodeID const& _id) const
+void Host::determinePublic()
 {
-    Guard l(x_connecting);
-    for (auto const& cIter : m_connecting)
-    {
-        std::shared_ptr<RLPXHandshake> const connecting = cIter.lock();
-        if (connecting && connecting->remote() == _id)
-            return true;
-    }
-    return false;
-}
-
-bi::tcp::endpoint Host::determinePublic() const
-{
-    // return listenIP (if public) > public > upnp > unspecified address.
-
+    // set m_tcpPublic := listenIP (if public) > public > upnp > unspecified address.
+    
     auto ifAddresses = Network::getInterfaceAddresses();
-    auto laddr = m_netConfig.listenIPAddress.empty() ?
-                     bi::address() :
-                     bi::make_address(m_netConfig.listenIPAddress);
+    auto laddr = m_netConfig.listenIPAddress.empty() ? bi::address() : bi::address::from_string(m_netConfig.listenIPAddress);
     auto lset = !laddr.is_unspecified();
-    auto paddr = m_netConfig.publicIPAddress.empty() ?
-                     bi::address() :
-                     bi::make_address(m_netConfig.publicIPAddress);
+    auto paddr = m_netConfig.publicIPAddress.empty() ? bi::address() : bi::address::from_string(m_netConfig.publicIPAddress);
     auto pset = !paddr.is_unspecified();
     
     bool listenIsPublic = lset && isPublicAddress(laddr);
@@ -513,24 +416,7 @@ bi::tcp::endpoint Host::determinePublic() const
     else if (pset)
         ep.address(paddr);
 
-    return ep;
-}
-
-ENR Host::updateENR(
-    ENR const& _restoredENR, bi::tcp::endpoint const& _tcpPublic, uint16_t const& _listenPort)
-{
-    auto const address =
-        _tcpPublic.address().is_unspecified() ? _restoredENR.ip() : _tcpPublic.address();
-
-    if (_restoredENR.ip() == address && _restoredENR.tcpPort() == _listenPort &&
-        _restoredENR.udpPort() == _listenPort)
-        return _restoredENR;
-
-    ENR const newENR = IdentitySchemeV4::updateENR(
-        _restoredENR, m_alias.secret(), address, _listenPort, _listenPort);
-    LOG(m_infoLogger) << "ENR updated: " << newENR;
-
-    return newENR;
+    m_tcpPublic = ep;
 }
 
 void Host::runAcceptor()
@@ -542,18 +428,21 @@ void Host::runAcceptor()
         cnetdetails << "Listening on local port " << m_listenPort;
         m_accepting = true;
 
-        m_tcp4Acceptor.async_accept([this](boost::system::error_code _ec, bi::tcp::socket _socket) {
+        auto socket = make_shared<RLPXSocket>(m_ioService);
+        m_tcp4Acceptor.async_accept(socket->ref(), [=](boost::system::error_code ec)
+        {
             m_accepting = false;
-            if (_ec || !m_tcp4Acceptor.is_open())
+            if (ec || !m_tcp4Acceptor.is_open())
+            {
+                socket->close();
                 return;
-
-            auto socket = make_shared<RLPXSocket>(std::move(_socket));
+            }
             if (peerCount() > peerSlots(Ingress))
             {
                 cnetdetails << "Dropping incoming connect due to maximum peer count (" << Ingress
                             << " * ideal peer count): " << socket->remoteEndpoint();
                 socket->close();
-                if (_ec.value() < 1)
+                if (ec.value() < 1)
                     runAcceptor();
                 return;
             }
@@ -583,6 +472,23 @@ void Host::runAcceptor()
     }
 }
 
+unordered_map<Public, string> Host::pocHosts()
+{
+    return {
+        // Mainnet:
+        { Public("a979fb575495b8d6db44f750317d0f4622bf4c2aa3365d6af7c284339968eef29b69ad0dce72a4d8db5ebb4968de0e3bec910127f134779fbcb0cb6d3331163c"), "52.16.188.185:30303" },
+        { Public("3f1d12044546b76342d59d4a05532c14b85aa669704bfe1f864fe079415aa2c02d743e03218e57a33fb94523adb54032871a6c51b2cc5514cb7c7e35b3ed0a99"), "13.93.211.84:30303" },
+        { Public("78de8a0916848093c73790ead81d1928bec737d565119932b98c6b100d944b7a95e94f847f689fc723399d2e31129d182f7ef3863f2b4c820abbf3ab2722344d"), "191.235.84.50:30303" },
+        { Public("158f8aab45f6d19c6cbf4a089c2670541a8da11978a2f90dbf6a502a4a3bab80d288afdbeb7ec0ef6d92de563767f3b1ea9e8e334ca711e9f8e2df5a0385e8e6"), "13.75.154.138:30303" },
+        { Public("1118980bf48b0a3640bdba04e0fe78b1add18e1cd99bf22d53daac1fd9972ad650df52176e7c7d89d1114cfef2bc23a2959aa54998a46afcf7d91809f0855082"), "52.74.57.123:30303" },
+        // Ropsten:
+        { Public("30b7ab30a01c124a6cceca36863ece12c4f5fa68e3ba9b0b51407ccc002eeed3b3102d20a88f1c1d3c3154e2449317b8ef95090e77b312d5cc39354f86d5d606"), "52.176.7.10:30303" },
+        { Public("865a63255b3bb68023b6bffd5095118fcc13e79dcf014fe4e47e065c350c7cc72af2e53eff895f11ba1bbb6a2b33271c1116ee870f266618eadfc2e78aa7349c"), "52.176.100.77:30303" },
+        { Public("6332792c4a00e3e4ee0926ed89e0d27ef985424d97b6a45bf0f23e51f0dcb5e66b875777506458aea7af6f9e4ffb69f43f3778ee73c81ed9d34c51c4b16b0b0f"), "52.232.243.152:30303" },
+        { Public("94c15d1b9e2fe7ce56e458b9a3b672ef11894ddedd0c6f247e0f1d3487f52b66208fb4aeb8179fce6e3a749ea93ed147c37976d67af557508d199d9594c35f09"), "192.81.208.223:30303" },
+    };
+}
+
 void Host::registerCapability(shared_ptr<CapabilityFace> const& _cap)
 {
     registerCapability(_cap, _cap->name(), _cap->version());
@@ -596,7 +502,7 @@ void Host::registerCapability(
         cwarn << "Capabilities must be registered before the network is started";
         return;
     }
-    m_capabilities[{_name, _version}] = {_cap, make_shared<ba::steady_timer>(m_ioContext)};
+    m_capabilities[{_name, _version}] = _cap;
 }
 
 void Host::addPeer(NodeSpec const& _s, PeerType _t)
@@ -699,24 +605,15 @@ void Host::connect(shared_ptr<Peer> const& _p)
         cwarn << "Network not running so cannot connect to peer " << _p->id << "@" << _p->address();
         return;
     }
-
     if (!haveCapabilities())
     {
         cwarn << "No capabilities registered so cannot connect to peer " << _p->id << "@" << _p->address();
         return;
     }
-
-    if (isHandshaking(_p->id))
-    {
-        cwarn << "Aborted connection. RLPX handshake with peer already in progress: " << _p->id
-              << "@" << _p->endpoint;
-        return;
-    }
-
+    
     if (havePeerSession(_p->id))
     {
-        cnetdetails << "Aborted connection. Peer already connected: " << _p->id << "@"
-                    << _p->endpoint;
+        cnetdetails << "Aborted connect. Node already connected.";
         return;
     }
 
@@ -732,8 +629,8 @@ void Host::connect(shared_ptr<Peer> const& _p)
     _p->m_lastAttempted = chrono::system_clock::now();
     
     bi::tcp::endpoint ep(_p->endpoint);
-    cnetdetails << "Attempting connection to " << _p->id << "@" << ep << " from " << id();
-    auto socket = make_shared<RLPXSocket>(bi::tcp::socket{m_ioContext});
+    cnetdetails << "Attempting connection to node " << _p->id << "@" << ep << " from " << id();
+    auto socket = make_shared<RLPXSocket>(m_ioService);
     socket->ref().async_connect(ep, [=](boost::system::error_code const& ec)
     {
         _p->m_lastAttempted = chrono::system_clock::now();
@@ -748,7 +645,7 @@ void Host::connect(shared_ptr<Peer> const& _p)
         }
         else
         {
-            cnetdetails << "Starting RLPX handshake with " << _p->id << "@" << ep;
+            cnetdetails << "Connecting to " << _p->id << "@" << ep;
             auto handshake = make_shared<RLPXHandshake>(this, socket, _p->id);
             {
                 Guard l(x_connecting);
@@ -762,10 +659,10 @@ void Host::connect(shared_ptr<Peer> const& _p)
     });
 }
 
-PeerSessionInfos Host::peerSessionInfos() const
+PeerSessionInfos Host::peerSessionInfo() const
 {
     if (!m_run)
-        return {};
+        return PeerSessionInfos();
 
     vector<PeerSessionInfo> ret;
     RecursiveGuard l(x_sessions);
@@ -792,48 +689,38 @@ void Host::run(boost::system::error_code const& _ec)
     if (!m_run || _ec)
         return;
 
-    // This again requires x_nodeTable, which is why an additional variable nodeTable is used.
-    if (auto nodeTable = this->nodeTable())
+    if (auto nodeTable = this->nodeTable()) // This again requires x_nodeTable, which is why an additional variable nodeTable is used.
         nodeTable->processEvents();
 
     // cleanup zombies
     DEV_GUARDED(x_connecting)
         m_connecting.remove_if([](weak_ptr<RLPXHandshake> h){ return h.expired(); });
+    DEV_GUARDED(x_timers)
+    m_timers.remove_if([](unique_ptr<io::deadline_timer> const& t) {
+        return t->expires_from_now().total_milliseconds() < 0;
+    });
 
     keepAlivePeers();
-    logActivePeers();
-
+    
     // At this time peers will be disconnected based on natural TCP timeout.
     // disconnectLatePeers needs to be updated for the assumption that Session
     // is always live and to ensure reputation and fallback timers are properly
     // updated. // disconnectLatePeers();
 
     // todo: update peerSlotsAvailable()
-
+    
     list<shared_ptr<Peer>> toConnect;
     unsigned reqConn = 0;
     {
         RecursiveGuard l(x_sessions);
-        auto p = m_peers.cbegin();
-        while (p != m_peers.cend())
+        for (auto const& p: m_peers)
         {
-            bool peerRemoved = false;
-            bool haveSession = havePeerSession(p->second->id);
-            bool required = p->second->peerType == PeerType::Required;
+            bool haveSession = havePeerSession(p.second->id);
+            bool required = p.second->peerType == PeerType::Required;
             if (haveSession && required)
                 reqConn++;
-            else if (!haveSession)
-            {
-                if (p->second->isUseless())
-                {
-                    peerRemoved = true;
-                    p = m_peers.erase(p);
-                }
-                else if (p->second->shouldReconnect() && (!m_netConfig.pin || required))
-                    toConnect.push_back(p->second);
-            }
-            if (!peerRemoved)
-                p++;
+            else if (!haveSession && p.second->shouldReconnect() && (!m_netConfig.pin || required))
+                toConnect.push_back(p.second);
         }
     }
 
@@ -860,18 +747,20 @@ void Host::run(boost::system::error_code const& _ec)
         return;
 
     auto runcb = [this](boost::system::error_code const& error) { run(error); };
-    m_runTimer.expires_after(c_runTimerInterval);
-    m_runTimer.async_wait(runcb);
+    m_timer.expires_from_now(boost::posix_time::milliseconds(c_timerInterval));
+    m_timer.async_wait(runcb);
 }
 
 // Called after thread has been started to perform additional class-specific state
 // initialization (e.g. start capability threads, start TCP listener, and kick off timers)
 void Host::startedWorking()
 {
+    // start capability threads (ready for incoming connections)
+    for (auto const& h: m_capabilities)
+        h.second->onStarting();
+    
     if (haveCapabilities())
     {
-        startCapabilities();
-
         // try to open acceptor (todo: ipv6)
         int port = Network::tcp4Listen(m_tcp4Acceptor, m_netConfig);
         if (port > 0)
@@ -885,12 +774,14 @@ void Host::startedWorking()
     else
         m_listenPort = m_netConfig.listenPort;
 
-    m_tcpPublic = determinePublic();
-    ENR const enr = updateENR(m_restoredENR, m_tcpPublic, listenPort());
-
-    auto nodeTable = make_shared<NodeTable>(m_ioContext, m_alias,
-        NodeIPEndpoint(bi::make_address(listenAddress()), listenPort(), listenPort()), enr,
-        m_netConfig.discovery, m_netConfig.allowLocalDiscovery);
+    determinePublic();
+    auto nodeTable = make_shared<NodeTable>(
+        m_ioService,
+        m_alias,
+        NodeIPEndpoint(bi::address::from_string(listenAddress()), listenPort(), listenPort()),
+        m_netConfig.discovery,
+        m_netConfig.allowLocalDiscovery
+    );
 
     // Don't set an event handler if we don't have capabilities, because no capabilities
     // means there's no host state to update in response to node table events
@@ -915,7 +806,7 @@ void Host::doWork()
     try
     {
         if (m_run)
-            m_ioContext.run();
+            m_ioService.run();
     }
     catch (exception const& _e)
     {
@@ -930,34 +821,16 @@ void Host::keepAlivePeers()
         return;
 
     RecursiveGuard l(x_sessions);
-    {
-        for (auto it = m_sessions.begin(); it != m_sessions.end();)
+    for (auto it = m_sessions.begin(); it != m_sessions.end();)
+        if (auto p = it->second.lock())
         {
-            auto p = it->second.lock();
-            if (p && p->isConnected())
-            {
-                p->ping();
-                ++it;
-            }
-            else
-                it = m_sessions.erase(it);
+            p->ping();
+            ++it;
         }
-    }
+        else
+            it = m_sessions.erase(it);
 
     m_lastPing = chrono::steady_clock::now();
-}
-
-void Host::logActivePeers()
-{
-    if (!m_run || chrono::steady_clock::now() - c_logActivePeersInterval < m_lastPeerLogMessage)
-        return;
-
-    LOG(m_infoLogger) << "Active peer count: " << peerCount();
-    if (m_netConfig.discovery)
-        LOG(m_infoLogger) << "Looking for peers...";
-
-    LOG(m_logger) << "Peers: " << peerSessionInfos();
-    m_lastPeerLogMessage = chrono::steady_clock::now();
 }
 
 void Host::disconnectLatePeers()
@@ -967,13 +840,10 @@ void Host::disconnectLatePeers()
         return;
 
     RecursiveGuard l(x_sessions);
-    for (auto p : m_sessions)
-    {
-        auto pp = p.second.lock();
-        if (pp && pp->isConnected())
+    for (auto p: m_sessions)
+        if (auto pp = p.second.lock())
             if (now - c_keepAliveTimeOut > m_lastPing && pp->lastReceived() < m_lastPing)
                 pp->disconnect(PingTimeout);
-    }
 }
 
 bytes Host::saveNetwork() const
@@ -995,8 +865,8 @@ bytes Host::saveNetwork() const
     for (auto const& entry : nodeTableEntries)
     {
         network.appendList(6);
-        entry.endpoint().streamRLP(network, NodeIPEndpoint::StreamInline);
-        network << entry.id() << entry.lastPongReceivedTime << entry.lastPongSentTime;
+        entry.endpoint.streamRLP(network, NodeIPEndpoint::StreamInline);
+        network << entry.id << entry.lastPongReceivedTime << entry.lastPongSentTime;
         count++;
     }
 
@@ -1032,12 +902,7 @@ bytes Host::saveNetwork() const
     }
 
     RLPStream ret(3);
-    ret << dev::p2p::c_protocolVersion;
-
-    ret.appendList(2);
-    ret << m_alias.secret().ref();
-    enr().streamRLP(ret);
-
+    ret << dev::p2p::c_protocolVersion << m_alias.secret().ref();
     ret.appendList(count);
     if (!!count)
         ret.appendRaw(network.out(), count);
@@ -1107,35 +972,13 @@ bool Host::peerSlotsAvailable(Host::PeerSlotType _type /*= Ingress*/)
     return peerCount() + m_pendingPeerConns.size() < peerSlots(_type);
 }
 
-std::pair<Secret, ENR> Host::restoreENR(bytesConstRef _b, NetworkConfig const& _netConfig)
+KeyPair Host::networkAlias(bytesConstRef _b)
 {
     RLP r(_b);
-    Secret secret;
     if (r.itemCount() == 3 && r[0].isInt() && r[0].toInt<unsigned>() >= 3)
-    {
-        if (r[1].isList())
-        {
-            secret = Secret{r[1][0].toBytes()};
-            auto enrRlp = r[1][1];
-
-            return make_pair(secret, IdentitySchemeV4::parseENR(enrRlp));
-        }
-
-        // Support for older format without ENR
-        secret = Secret{r[1].toBytes()};
-    }
+        return KeyPair(Secret(r[1].toBytes()));
     else
-    {
-        // no private key found, create new one
-        secret = KeyPair::create().secret();
-    }
-
-    auto const address = _netConfig.publicIPAddress.empty() ?
-                             bi::address{} :
-                             bi::make_address(_netConfig.publicIPAddress);
-
-    return make_pair(secret,
-        IdentitySchemeV4::createENR(secret, address, _netConfig.listenPort, _netConfig.listenPort));
+        return KeyPair::create();
 }
 
 bool Host::nodeTableHasNode(Public const& _id) const
@@ -1175,16 +1018,13 @@ void Host::forEachPeer(
     RecursiveGuard l(x_sessions);
     vector<shared_ptr<SessionFace>> sessions;
     for (auto const& i : m_sessions)
-    {
-        auto const s = i.second.lock();
-        if (s && s->isConnected())
+        if (shared_ptr<SessionFace> s = i.second.lock())
         {
             vector<CapDesc> capabilities = s->capabilities();
             for (auto const& cap : capabilities)
                 if (cap.first == _capabilityName)
                     sessions.emplace_back(move(s));
         }
-    }
 
     // order peers by rating, connection age
     auto sessionLess = [](shared_ptr<SessionFace> const& _left,
@@ -1200,3 +1040,13 @@ void Host::forEachPeer(
             return;
 }
 
+void Host::scheduleExecution(int _delayMs, function<void()> _f)
+{
+    unique_ptr<io::deadline_timer> t(new io::deadline_timer(m_ioService));
+    t->expires_from_now(boost::posix_time::milliseconds(_delayMs));
+    t->async_wait([_f](boost::system::error_code const& _ec) {
+        if (!_ec)
+            _f();
+    });
+    DEV_GUARDED(x_timers) { m_timers.emplace_back(move(t)); }
+}

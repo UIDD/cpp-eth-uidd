@@ -1,6 +1,19 @@
-// Aleth: Ethereum C++ client, tools and libraries.
-// Copyright 2014-2019 Aleth Authors.
-// Licensed under the GNU General Public License, Version 3.
+/*
+    This file is part of cpp-ethereum.
+
+    cpp-ethereum is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    cpp-ethereum is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #include "Common.h"
 #include "Exceptions.h"
@@ -25,7 +38,7 @@ void InvariantChecker::checkInvariants(HasInvariants const* _this, char const* _
     if (!_this->invariants())
     {
         cwarn << (_pre ? "Pre" : "Post") << "invariant failed in" << _fn << "at" << _file << ":" << _line;
-        BOOST_THROW_EXCEPTION(FailedInvariant());
+        ::boost::exception_detail::throw_exception_(FailedInvariant(), _fn, _file, _line);
     }
 }
 
@@ -100,8 +113,10 @@ that users do not need to install language packs for their OS.
 void setDefaultOrCLocale()
 {
 #if __unix__
-    if (!setlocale(LC_ALL, ""))
+    if (!std::setlocale(LC_ALL, ""))
+    {
         setenv("LC_ALL", "C", 1);
+    }
 #endif
 
 #if defined(_WIN32)
